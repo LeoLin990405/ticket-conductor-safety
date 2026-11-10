@@ -1,0 +1,101 @@
+# Snippet for WP9. This file is not the app manifest, and Forge does not load it.
+# Merge these keys into the root manifest.yml. Do not paste this file raw
+# under an existing `modules:` or `resources:` key.
+#
+# Retire the hello-codegeist agent (`hello-codegeist-hello-world-agent` and
+# its fetch-comments / add-comment actions) in that same integration.
+# Keep the app id:
+#   ari:cloud:ecosystem::app/00000000-0000-4000-8000-0000000000a1
+#
+# Action modules stay in WP5's src/actions/actions.manifest.yml.
+# plan-split's plan input is `stepsJson` (string). There is no `steps` array
+# input: action input types are boolean, integer, number, and string only.
+# The handler is planSplit. It JSON.parses stepsJson into
+# steps[{title, workerType, input, dependsOn}]. dependsOn is a list of
+# step indexes. An empty list starts with the run. Cycles are rejected.
+#
+# get-run-status and recall-memory use actionVerb GET.
+# dispatch-run and record-decision use UPDATE or CREATE.
+# plan-split creates a run, so CREATE fits a chat agent. An automation rule
+# will not invoke CREATE or UPDATE.
+#
+# The prompt file must not tell the agent to call the skill by name.
+# The skill description is what makes the procedure available.
+# Conversation starters stay on the agent. They are copied from prompts/router.md.
+#
+# rovo:mcp is included (one module, key conductor-mcp). It exposes
+# plan-split, dispatch-run, get-run-status, and recall-memory to Rovo
+# Studio agents and, after an admin enables them, to external MCP clients.
+# Do not add a second rovo:mcp module. Do not add llm, permissions.external,
+# rovo:agentConnector, or a sql module. Workers stay the step-worker and
+# effect-applier consumers, each with timeoutSeconds 900.
+
+resources:
+  - key: conductor-prompts
+    path: prompts
+
+modules:
+  rovo:agent:
+    - key: conductor-router
+      name: Ticket Conductor
+      description: Plans a Jira Epic into steps, then runs the plan you confirm.
+      prompt: resource:conductor-prompts;router.md
+      conversationStarters:
+        - Plan and run this Epic
+        - Show the status of this run
+        - What did we decide last time?
+        - Remember this decision for the project
+      actions:
+        - plan-split
+        - dispatch-run
+        - get-run-status
+        - recall-memory
+        - record-decision
+        - replay-run
+        - fork-run
+      skills:
+        - conductor-playbook
+    - key: conductor-handoff
+      name: Conductor handoff
+      description: Another agent. Hands a Jira goal to Ticket Conductor and reads the run status. It does not write to Jira itself.
+      prompt: resource:conductor-prompts;handoff.md
+      conversationStarters:
+        - Hand this Epic's goal to Conductor
+        - Read the Conductor status for this Epic
+      actions:
+        - plan-split
+        - dispatch-run
+        - get-run-status
+        - recall-memory
+      skills:
+        - conductor-tools
+  rovo:skill:
+    - key: conductor-playbook
+      source:
+        dir: prompts/conductor-playbook
+      dependencies:
+        tools:
+          - plan-split
+          - dispatch-run
+          - get-run-status
+          - recall-memory
+          - record-decision
+          - replay-run
+          - fork-run
+    - key: conductor-tools
+      source:
+        dir: prompts/conductor-tools
+      dependencies:
+        tools:
+          - plan-split
+          - dispatch-run
+          - get-run-status
+          - recall-memory
+  rovo:mcp:
+    - key: conductor-mcp
+      name: Conductor MCP
+      tools:
+        - plan-split
+        - dispatch-run
+        - get-run-status
+        - recall-memory

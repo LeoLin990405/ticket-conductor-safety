@@ -1,0 +1,16 @@
+# Snippet for WP9. UI Kit issue panel. `render: native` is required for UI Kit.
+resources:
+  - key: run-panel
+    path: src/frontend/index.jsx
+modules:
+  jira:issuePanel:
+    - key: run-panel
+      resource: run-panel
+      resolver:
+        function: panelResolver
+      render: native
+      title: Conductor run
+      icon: https://developer.atlassian.com/platform/forge/images/issue-panel-icon.svg
+  function:
+    - key: panelResolver
+      handler: index.panelResolver

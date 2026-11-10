@@ -1,0 +1,5 @@
+{
+  "name": "@ticket-conductor/resolvers",
+  "type": "module",
+  "private": true
+}

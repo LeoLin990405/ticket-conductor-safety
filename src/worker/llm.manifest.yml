@@ -1,0 +1,14 @@
+# WP11 snippet for the product manifest.
+# The same additions are already in the root manifest.yml.
+# Adding `llm` is a major version. search:confluence is a new scope.
+# Both require a dev install upgrade. Do not add egress.
+
+modules:
+  llm:
+    - key: conductor-llm
+      model:
+        - claude
+
+permissions:
+  scopes:
+    - search:confluence

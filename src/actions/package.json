@@ -1,0 +1,5 @@
+{
+  "name": "@ticket-conductor/actions",
+  "type": "module",
+  "private": true
+}

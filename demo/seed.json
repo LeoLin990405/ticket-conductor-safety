@@ -1,0 +1,122 @@
+{
+  "version": 1,
+  "site": "your-site.atlassian.net",
+  "product": "jira",
+  "environment": "development",
+  "project": {
+    "key": "PAY",
+    "name": "Payments",
+    "projectTypeKey": "software",
+    "style": "classic"
+  },
+  "labels": ["conductor-demo", "refunds", "payments", "ledger"],
+  "createOrder": [
+    "epic-refunds",
+    "epic-reconcile",
+    "story-refund-api",
+    "story-ledger-line",
+    "bug-duplicate-webhook",
+    "task-capture-dependency"
+  ],
+  "issues": [
+    {
+      "ref": "epic-refunds",
+      "issueType": "Epic",
+      "summary": "Ship payment refunds",
+      "labels": ["conductor-demo", "refunds", "payments"],
+      "description": "Ship partial and full refunds for captured payments. A refund is idempotent on the payment id. A partial refund cannot exceed the captured amount. One ledger line is written per successful refund, and a duplicate request returns that same line. The webhook refund.succeeded must keep the original ledger line when it is delivered twice. The payments service owns capture. This Epic owns the refund API, the ledger line, and the webhook handler."
+    },
+    {
+      "ref": "epic-reconcile",
+      "issueType": "Epic",
+      "summary": "Reconcile refund ledger",
+      "labels": ["conductor-demo", "refunds", "ledger"],
+      "description": "Reconcile refund ledger lines with the payment provider. This Epic relates to Ship payment refunds. Keep one refund per payment id, and keep a duplicate webhook on the original ledger line."
+    },
+    {
+      "ref": "story-refund-api",
+      "issueType": "Story",
+      "epicRef": "epic-refunds",
+      "summary": "Define the refund API",
+      "labels": ["conductor-demo", "refunds", "payments"],
+      "description": "POST /refunds. The idempotency key is the payment id. A partial amount is allowed up to the captured amount. A repeat request returns the original refund."
+    },
+    {
+      "ref": "story-ledger-line",
+      "issueType": "Story",
+      "epicRef": "epic-refunds",
+      "summary": "Write the refund ledger line",
+      "labels": ["conductor-demo", "refunds", "ledger"],
+      "description": "Write one ledger line per successful refund. A duplicate refund request returns the original line."
+    },
+    {
+      "ref": "bug-duplicate-webhook",
+      "issueType": "Bug",
+      "epicRef": "epic-refunds",
+      "summary": "Duplicate refund webhook creates two ledger lines",
+      "labels": ["conductor-demo", "refunds", "ledger"],
+      "description": "Delivering refund.succeeded twice creates two ledger lines. The handler should treat the payment id as the idempotency key and return the original line."
+    },
+    {
+      "ref": "task-capture-dependency",
+      "issueType": "Task",
+      "epicRef": "epic-refunds",
+      "summary": "Confirm dependency on payment capture",
+      "labels": ["conductor-demo", "payments"],
+      "description": "Refunds require a captured payment. Confirm the capture contract this Epic depends on, and link the blocking issue."
+    }
+  ],
+  "issueLinks": [
+    {
+      "type": "Relates",
+      "fromRef": "epic-reconcile",
+      "toRef": "epic-refunds"
+    }
+  ],
+  "demo": {
+    "primaryEpicRef": "epic-refunds",
+    "relatedEpicRef": "epic-reconcile",
+    "stuckStepVariable": "CONDUCTOR_DEMO_STUCK_STEP",
+    "primaryGoal": "Plan and run this Epic: ship payment refunds that are idempotent on the payment id, with one ledger line and a webhook that keeps the original line.",
+    "relatedGoal": "Plan how to reconcile the refund ledger with the provider. Keep one refund per payment id.",
+    "planSteps": [
+      {
+        "title": "Find refund work already on this Epic",
+        "workerType": "research",
+        "input": "project = PAY AND labels = refunds ORDER BY created ASC"
+      },
+      {
+        "title": "Draft the refund API",
+        "workerType": "draft-spec",
+        "input": "POST /refunds. The idempotency key is the payment id. A partial refund cannot exceed the captured amount."
+      },
+      {
+        "title": "Check the payment capture dependency",
+        "workerType": "check-deps",
+        "input": "Refunds require a captured payment. Name the blocking issue in PAY."
+      },
+      {
+        "title": "Draft the ledger rule",
+        "workerType": "draft-spec",
+        "input": "One ledger line per successful refund. A duplicate request returns the original line."
+      },
+      {
+        "title": "Check the duplicate webhook bug",
+        "workerType": "check-deps",
+        "input": "refund.succeeded delivered twice must keep the original ledger line."
+      },
+      {
+        "title": "List decisions to remember",
+        "workerType": "research",
+        "input": "Idempotency on the payment id, partial refunds, webhook delivery, and the capture dependency."
+      }
+    ]
+  },
+  "expectedWriteBack": {
+    "header": "[Conductor memory]",
+    "memType": "decision",
+    "scope": "project",
+    "validUntil": 0,
+    "text": "Refunds are idempotent on the payment id. A duplicate webhook returns the original ledger line and does not create a second one."
+  }
+}

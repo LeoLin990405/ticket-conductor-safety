@@ -1,0 +1,38 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.23.4
+          cache: npm
+      - run: npm ci
+      # `npm test` is `node --test`, which discovers both trees. CI splits
+      # them so a KVS-budget failure is its own step. This Node version does
+      # not treat a directory argument as a test root, so the unit step passes
+      # the file list. The simulation never calls Atlassian and does not read
+      # FORGE_EMAIL or FORGE_API_TOKEN.
+      - name: unit and module tests
+        shell: bash
+        run: |
+          mapfile -t files < <(find src spikes tests/e2e tests/scenarios -type f \( -name '*.test.js' -o -name '*.test.mjs' \) | sort)
+          node --test --test-reporter=spec "${files[@]}"
+      - name: simulation scenarios
+        run: npm run test:simulation
+      - name: forge lint
+        env:
+          FORGE_EMAIL: ${{ secrets.FORGE_EMAIL }}
+          FORGE_API_TOKEN: ${{ secrets.FORGE_API_TOKEN }}
+        run: |
+          if [ -z "$FORGE_API_TOKEN" ]; then
+            echo "FORGE_API_TOKEN is not configured; skipping forge lint."
+            exit 0
+          fi
+          npx --yes @forge/cli@14.2.0 lint

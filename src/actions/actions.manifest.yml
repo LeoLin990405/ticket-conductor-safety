@@ -1,0 +1,134 @@
+# Snippet for the action modules. The product manifest.yml is what Forge
+# loads. Descriptions are the strings in src/actions/contract.js and must
+# stay within 255 characters (Forge CLI 14.2.0 schema). They are written
+# for a calling agent. `stepsJson` is a string because there is no array
+# input type. rovo:mcp and the handoff agent live in the root manifest.
+modules:
+  action:
+    - key: plan-split
+      name: Plan split
+      function: planSplit
+      actionVerb: CREATE
+      description: "Other agents call this to save a Conductor plan. Returns {ok,runId,status,steps,recalledMemories}. stepsJson is JSON text of 1-8 objects {title,workerType,input,dependsOn}. dependsOn is step indexes; a cycle is rejected. No Jira writes."
+      inputs:
+        epicKey:
+          title: Epic key
+          type: string
+          required: true
+          description: Jira Epic issue key, such as PAY-1.
+        goal:
+          title: Goal
+          type: string
+          required: true
+          description: What this run should accomplish.
+        stepsJson:
+          title: Steps JSON
+          type: string
+          required: true
+          description: JSON array of objects with title, workerType, input, and dependsOn indexes.
+        projectKey:
+          title: Project key
+          type: string
+          required: false
+          description: Jira project key. Defaults to the issue context.
+    - key: dispatch-run
+      name: Dispatch run
+      function: dispatchRun
+      actionVerb: UPDATE
+      description: "Other agents call this to start a saved plan. Input runId from plan-split. Returns {ok,runId,status}. A step starts when every dependsOn index is done; others wait. A repeat call does not enqueue again. No Jira writes."
+      inputs:
+        runId:
+          title: Run id
+          type: string
+          required: true
+          description: runId returned by plan-split.
+    - key: get-run-status
+      name: Get run status
+      function: getRunStatus
+      actionVerb: GET
+      description: "Other agents call this to read a Conductor run. Pass runId, or epicKey for the latest run. Returns {ok,run,steps}. Each step has idx, title, workerType, status, dependsOn, childIssueKey, attempt. waiting means a dependency is not done. Read-only."
+      inputs:
+        runId:
+          title: Run id
+          type: string
+          required: false
+          description: Run to read. Omit to use epicKey.
+        epicKey:
+          title: Epic key
+          type: string
+          required: false
+          description: Latest run for this Epic when runId is omitted.
+    - key: recall-memory
+      name: Recall memory
+      function: recallMemory
+      actionVerb: GET
+      description: "Other agents call this before planning. Returns {ok,memories,skillIndex}. memories stay inside a 1536-byte budget. skillIndex is {name,description} only and is not part of that budget. Read-only."
+      inputs:
+        projectKey:
+          title: Project key
+          type: string
+          required: true
+          description: Jira project key whose memories should be recalled.
+        query:
+          title: Query
+          type: string
+          required: true
+          description: Goal or Epic summary text used to score memories.
+    - key: record-decision
+      name: Record decision
+      function: recordDecision
+      actionVerb: CREATE
+      description: Store one decision, lesson, or fact. The input name is type. Storage writes memType.
+      inputs:
+        epicKey:
+          title: Epic key
+          type: string
+          required: true
+          description: Epic the decision came from.
+        text:
+          title: Text
+          type: string
+          required: true
+          description: The decision, lesson, or fact to remember.
+        type:
+          title: Type
+          type: string
+          required: true
+          description: One of decision, lesson, or fact. Stored as memType.
+        projectKey:
+          title: Project key
+          type: string
+          required: false
+          description: Jira project key. Defaults to the issue context.
+    - key: replay-run
+      name: Replay run
+      function: replayRun
+      actionVerb: GET
+      description: "Dry-run a saved run against today's Jira. Returns {ok,dryRun,duplicateWrites,steps,effects,lessons}. Uses lessons valid at the run createdAt. Names newer lessons in the diff. Writes nothing."
+      inputs:
+        runId:
+          title: Run id
+          type: string
+          required: true
+          description: Run to replay. Effects already applied are skipped by requestKey.
+    - key: fork-run
+      name: Fork run
+      function: forkRun
+      actionVerb: CREATE
+      description: "Fork a run from one step. Returns {ok,runId,status,forkedFromRunId,copy,rerun}. Re-runs only steps that depend on stepIdx. Optional input edits that step too. Prefix effects are not written again."
+      inputs:
+        runId:
+          title: Run id
+          type: string
+          required: true
+          description: Original run to fork.
+        stepIdx:
+          title: Step index
+          type: integer
+          required: true
+          description: Step to fork from. Zero-based.
+        input:
+          title: New input
+          type: string
+          required: false
+          description: Replacement input for that step. Omit to keep it and re-run only later steps.

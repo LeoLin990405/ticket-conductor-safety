@@ -1,0 +1,17 @@
+{
+  "name": "ticket-conductor-capability-spike",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Throwaway WP0 Forge app. Register a new app id here. Never copy it onto Ticket Conductor.",
+  "type": "module",
+  "license": "MIT",
+  "scripts": {
+    "lint": "forge lint",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@forge/events": "3.0.9",
+    "@forge/kvs": "2.1.1",
+    "@forge/llm": "1.0.9"
+  }
+}

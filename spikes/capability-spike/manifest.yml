@@ -1,0 +1,243 @@
+# Throwaway WP0 app. `forge register` in this directory replaces app.id.
+# Never copy this id, the egress block, the web trigger, or the llm module
+# into the Ticket Conductor manifest unless docs/SPIKES.md says to.
+modules:
+  llm:
+    - key: spike-llm
+      model:
+        - claude
+  function:
+    - key: probe
+      handler: index.probe
+    - key: echoPlan
+      handler: index.echoPlan
+    - key: enqueueProbe
+      handler: index.enqueueProbe
+    - key: queueConsumer
+      handler: index.queueConsumer
+      timeoutSeconds: 900
+  webtrigger:
+    - key: spike-probe
+      function: probe
+      urlFormat: v2
+      response:
+        type: dynamic
+  consumer:
+    - key: spike-queue-consumer
+      queue: spike-queue
+      function: queueConsumer
+  action:
+    - key: echo-plan
+      name: Echo plan
+      function: echoPlan
+      actionVerb: GET
+      description: Echo a JSON plan string. Proves a rovo:skill tool ran. Does not
+        write to Jira.
+      inputs:
+        planJson:
+          title: Plan JSON
+          type: string
+          required: true
+          description: A JSON array of steps, each with title, workerType, and input.
+    - key: enqueue-probe
+      name: Enqueue probe
+      function: enqueueProbe
+      actionVerb: TRIGGER
+      description: Push one probe event onto spike-queue and return the job id. Does
+        not write to Jira.
+      inputs:
+        holdSeconds:
+          title: Hold seconds
+          type: integer
+          required: false
+          description: Optional consumer wait, capped at 70, to show the 55 second default
+            was raised.
+  rovo:skill:
+    - key: plan-playbook
+      source:
+        dir: skills/plan-playbook
+      dependencies:
+        tools:
+          - echo-plan
+  rovo:agent:
+    - key: conductor-spike
+      name: Conductor spike
+      description: Spike agent that plans through a skill and can enqueue a queue probe.
+      prompt: >
+        You are the Ticket Conductor capability spike. You do not create Jira
+        issues. When the user asks you to plan work, follow the plan-playbook
+        skill and call echo-plan with a JSON string. When the user asks you to
+        enqueue a probe, call enqueue-probe. Otherwise explain that this agent
+        only has those two jobs.
+      conversationStarters:
+        - Plan a one-step spike
+      skills:
+        - plan-playbook
+      actions:
+        - enqueue-probe
+  rovo:mcp:
+    - key: conductor-spike-mcp
+      name: Conductor spike MCP
+      tools:
+        - echo-plan
+        - enqueue-probe
+app:
+  runtime:
+    name: nodejs24.x
+    memoryMB: 256
+    architecture: arm64
+  id: ari:cloud:ecosystem::app/00000000-0000-4000-8000-0000000000a2
+  storage:
+    classifications:
+      - ugc
+    entities:
+      - name: run
+        attributes:
+          epicKey:
+            type: string
+          projectKey:
+            type: string
+          goal:
+            type: string
+          status:
+            type: string
+          createdBy:
+            type: string
+          createdAt:
+            type: float
+          updatedAt:
+            type: float
+          summary:
+            type: any
+        indexes:
+          - name: by-epic
+            partition:
+              - epicKey
+            range:
+              - createdAt
+          - name: by-status
+            partition:
+              - status
+            range:
+              - updatedAt
+      - name: step
+        attributes:
+          runId:
+            type: string
+          idx:
+            type: integer
+          title:
+            type: string
+          workerType:
+            type: string
+          childIssueKey:
+            type: string
+          status:
+            type: string
+          attempt:
+            type: integer
+          deadlineAt:
+            type: float
+          createdAt:
+            type: float
+          output:
+            type: any
+          error:
+            type: any
+        indexes:
+          - name: by-run
+            partition:
+              - runId
+            range:
+              - idx
+          - name: by-status-deadline
+            partition:
+              - status
+            range:
+              - deadlineAt
+          - name: by-status-created
+            partition:
+              - status
+            range:
+              - createdAt
+      - name: effect
+        attributes:
+          runId:
+            type: string
+          stepId:
+            type: string
+          kind:
+            type: string
+          payload:
+            type: any
+          status:
+            type: string
+          tries:
+            type: integer
+          result:
+            type: any
+          appliedAt:
+            type: float
+          updatedAt:
+            type: float
+        indexes:
+          - name: by-status
+            partition:
+              - status
+            range:
+              - updatedAt
+          - name: by-run
+            partition:
+              - runId
+            range:
+              - updatedAt
+      - name: memory
+        attributes:
+          projectKey:
+            type: string
+          scope:
+            type: string
+          memType:
+            type: string
+          text:
+            type: string
+          sourceIssue:
+            type: string
+          runId:
+            type: string
+          validUntil:
+            type: float
+          supersededBy:
+            type: string
+          createdAt:
+            type: float
+        indexes:
+          - name: by-project
+            partition:
+              - projectKey
+            range:
+              - createdAt
+      - name: spike-run
+        attributes:
+          epicKey:
+            type: string
+          createdAt:
+            type: float
+          epochMsInt:
+            type: integer
+          status:
+            type: string
+        indexes:
+          - name: by-epic
+            partition:
+              - epicKey
+            range:
+              - createdAt
+permissions:
+  scopes:
+    - storage:app
+  external:
+    fetch:
+      backend:
+        - address: api.anthropic.com
+          inScopeEUD: false

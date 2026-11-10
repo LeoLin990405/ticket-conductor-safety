@@ -1,0 +1,9 @@
+node_modules/
+.env
+.env.*
+*.log
+.forge/
+.forge-tunnel*
+tunnel/
+.DS_Store
+coverage/

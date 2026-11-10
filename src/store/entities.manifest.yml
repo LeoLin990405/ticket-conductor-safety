@@ -1,0 +1,237 @@
+# Ticket Conductor — Custom Entity Store definitions (WP1)
+#
+# WP9: paste this `app.storage` block into the root manifest.yml, keeping the
+# existing app.id and permissions. It adds the `storage:app` scope; the dev
+# install must be upgraded after that manifest change.
+#
+# Design notes:
+# - The entity key holds runId / stepId / requestKey / memId / the event key.
+#   Those ids are not duplicated as attributes. Writing the key field name
+#   (runId on a run, eventId on an event) is an undeclared attribute and
+#   Forge rejects it with a bare 422.
+# - `event.seq` is an integer and is the only range used to order a run.
+#   `event.at` is a float timestamp and is never a query condition.
+# - Queried timestamps use `float`, not `integer`: a Forge entity integer is
+#   signed 32-bit and epoch milliseconds do not fit.
+# - `step.input` stores the Router plan input for the worker. It is `any`
+#   because worker inputs are structured JSON.
+# - `step.createdAt` + `by-status-created` make "queued for more than 10
+#   minutes" a single range query. `by-status-deadline` only contains steps
+#   that have a deadline (running steps).
+# - Memory's category attribute is `memType`; the JavaScript adapter exposes
+#   the same field name and accepts `type` only as an input alias.
+# - Values are JSON-safe and app-capped at 64 KiB by src/store, below the
+#   platform's 240 KiB per-value limit.
+app:
+  storage:
+    classifications:
+      - ugc
+    entities:
+      - name: run
+        attributes:
+          epicKey:
+            type: string
+          projectKey:
+            type: string
+          goal:
+            type: string
+          status:
+            type: string
+          createdBy:
+            type: string
+          createdAt:
+            type: float
+          updatedAt:
+            type: float
+          summary:
+            type: any
+          # Unused. Kept because Forge does not allow removing a deployed entity
+          # attribute. Do not delete this field.
+          summarizeQueued:
+            type: boolean
+          forkedFromRunId:
+            type: string
+          forkedFromStepIdx:
+            type: integer
+          forkSeq:
+            type: integer
+          # WP14 lead loop. Integer so a review can compare-and-swap without a
+          # float condition. Do not remove this attribute once it is deployed.
+          reviewedThroughWave:
+            type: integer
+          # Digests (about 1 KB each) and the last lead decision. One any value.
+          # Do not remove this attribute once it is deployed.
+          ledger:
+            type: any
+          # Novelty #6. Caps and measured usage the panel reads later.
+          # One any value. Do not remove this attribute once it is deployed.
+          # Critical-path ETA is not stored here.
+          budget:
+            type: any
+        indexes:
+          - name: by-epic
+            partition:
+              - epicKey
+            range:
+              - createdAt
+          - name: by-status
+            partition:
+              - status
+            range:
+              - updatedAt
+      - name: step
+        attributes:
+          runId:
+            type: string
+          idx:
+            type: integer
+          title:
+            type: string
+          workerType:
+            type: string
+          input:
+            type: any
+          childIssueKey:
+            type: string
+          status:
+            type: string
+          attempt:
+            type: integer
+          deadlineAt:
+            type: float
+          createdAt:
+            type: float
+          output:
+            type: any
+          error:
+            type: any
+          # Step indexes this step waits on. `any` because a Forge attribute
+          # has no array type. Empty list means the step can start immediately.
+          # Added in WP10. Do not remove: existing rows may already store it.
+          dependsOn:
+            type: any
+          # Outputs of the dependsOn steps, copied on when this step is released.
+          # Workers read this from the step row. Also `any`, also append-only.
+          dependencyContext:
+            type: any
+          stallCount:
+            type: integer
+          # WP15. Do not remove these once deployed. `stepId` is the key, not
+          # an attribute. `brief` is one any value.
+          skill:
+            type: string
+          brief:
+            type: any
+          # WP14. 1-based wave. Plan steps are wave 1. Do not remove once deployed.
+          # stepId stays the entity key and is not an attribute.
+          wave:
+            type: integer
+        indexes:
+          - name: by-run
+            partition:
+              - runId
+            range:
+              - idx
+          - name: by-status-deadline
+            partition:
+              - status
+            range:
+              - deadlineAt
+          - name: by-status-created
+            partition:
+              - status
+            range:
+              - createdAt
+          - name: by-child-issue
+            partition:
+              - childIssueKey
+            range:
+              - createdAt
+      - name: effect
+        attributes:
+          runId:
+            type: string
+          stepId:
+            type: string
+          kind:
+            type: string
+          payload:
+            type: any
+          status:
+            type: string
+          tries:
+            type: integer
+          result:
+            type: any
+          appliedAt:
+            type: float
+          updatedAt:
+            type: float
+        indexes:
+          - name: by-status
+            partition:
+              - status
+            range:
+              - updatedAt
+          - name: by-run
+            partition:
+              - runId
+            range:
+              - updatedAt
+      - name: memory
+        attributes:
+          projectKey:
+            type: string
+          scope:
+            type: string
+          memType:
+            type: string
+          text:
+            type: string
+          sourceIssue:
+            type: string
+          runId:
+            type: string
+          validUntil:
+            type: float
+          supersededBy:
+            type: string
+          createdAt:
+            type: float
+        indexes:
+          - name: by-project
+            partition:
+              - projectKey
+            range:
+              - createdAt
+      - name: event
+        attributes:
+          runId:
+            type: string
+          seq:
+            type: integer
+          kind:
+            type: string
+          at:
+            type: float
+          stepId:
+            type: string
+          stepIdx:
+            type: integer
+          journalKey:
+            type: string
+          span:
+            type: any
+          detail:
+            type: any
+        indexes:
+          - name: by-run
+            partition:
+              - runId
+            range:
+              - seq
+          - name: by-journal
+            partition:
+              - journalKey
+            range:
+              - seq

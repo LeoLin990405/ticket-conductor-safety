@@ -1,0 +1,24 @@
+{
+  "name": "ticket-conductor",
+  "version": "2.0.36-next.1",
+  "description": "Ticket Conductor - Codegeist 2026 Forge app",
+  "main": "index.js",
+  "type": "module",
+  "license": "MIT",
+  "private": true,
+  "dependencies": {
+    "@forge/api": "8.4.0",
+    "@forge/bridge": "7.2.1",
+    "@forge/events": "3.0.9",
+    "@forge/kvs": "2.1.1",
+    "@forge/llm": "1.0.9",
+    "@forge/react": "12.4.0",
+    "@forge/resolver": "2.0.2"
+  },
+  "scripts": {
+    "lint": "forge lint",
+    "test": "node --test",
+    "test:simulation": "node --test --test-reporter=spec tests/simulation/*.test.mjs",
+    "test:headroom": "node --test --test-reporter=spec tests/simulation/scenarios.test.mjs"
+  }
+}

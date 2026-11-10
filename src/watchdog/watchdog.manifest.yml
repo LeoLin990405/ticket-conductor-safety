@@ -1,0 +1,18 @@
+# Ticket Conductor — Watchdog manifest snippet (WP4)
+#
+# WP9: merge these entries into the root manifest.yml. Keep the existing app
+# id and permissions; the watchdog adds no scopes. `storage:app` and the
+# `step-queue` / `effect-queue` consumers come from WP1/WP2/WP9.
+#
+# `timeoutSeconds: 900` matches the other async modules. A five-minute
+# schedule with 200 stuck steps is well inside 25 seconds in tests, but the
+# longer ceiling keeps a large real pass from hitting the 55-second default.
+modules:
+  scheduledTrigger:
+    - key: watchdog
+      function: watchdogHandler
+      interval: fiveMinute
+  function:
+    - key: watchdogHandler
+      handler: index.watchdogHandler
+      timeoutSeconds: 900

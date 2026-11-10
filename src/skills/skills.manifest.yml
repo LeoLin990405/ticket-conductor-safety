@@ -1,0 +1,14 @@
+# Snippet for the step entity (WP15). WP9 pastes these two attributes into
+# the `step` entity in manifest.yml. Do not remove them later: Forge rejects
+# a manifest that drops an attribute which has already been deployed.
+#
+# `stepId` is the entity key. It must not be added as an attribute. Writing
+# it on the value is a 422.
+#
+# `brief` is one `any` value so the four brief fields (objective,
+# allowedTools, doneWhen, budget) can change shape without a new attribute
+# we would be unable to delete.
+skill:
+  type: string
+brief:
+  type: any

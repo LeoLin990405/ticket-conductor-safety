@@ -1,0 +1,488 @@
+modules:
+  # WP11. Atlassian-hosted Claude for step workers. Adding this module is a
+  # major version: an existing install must be approved again. One llm module
+  # per app, family `claude` only. Workers call it from the step-worker
+  # consumer, not from an action. See src/worker/LLM.md.
+  llm:
+    - key: conductor-llm
+      model:
+        - claude
+  rovo:agent:
+    - key: conductor-router
+      name: Ticket Conductor
+      description: Plans a Jira Epic into steps, then runs the plan you confirm.
+      prompt: resource:conductor-prompts;router.md
+      conversationStarters:
+        - Plan and run this Epic
+        - Show the status of this run
+        - What did we decide last time?
+        - Remember this decision for the project
+      actions:
+        - plan-split
+        - dispatch-run
+        - get-run-status
+        - recall-memory
+        - record-decision
+        - replay-run
+        - fork-run
+      skills:
+        - conductor-playbook
+    - key: conductor-handoff
+      name: Conductor handoff
+      description: Another agent. Hands a Jira goal to Ticket Conductor and reads the run status. It does not write to Jira itself.
+      prompt: resource:conductor-prompts;handoff.md
+      conversationStarters:
+        - Hand this Epic's goal to Conductor
+        - Read the Conductor status for this Epic
+      actions:
+        - plan-split
+        - dispatch-run
+        - get-run-status
+        - recall-memory
+      skills:
+        - conductor-tools
+  rovo:skill:
+    - key: conductor-playbook
+      source:
+        dir: prompts/conductor-playbook
+      dependencies:
+        tools:
+          - plan-split
+          - dispatch-run
+          - get-run-status
+          - recall-memory
+          - record-decision
+          - replay-run
+          - fork-run
+    - key: conductor-tools
+      source:
+        dir: prompts/conductor-tools
+      dependencies:
+        tools:
+          - plan-split
+          - dispatch-run
+          - get-run-status
+          - recall-memory
+  rovo:mcp:
+    - key: conductor-mcp
+      name: Conductor MCP
+      tools:
+        - plan-split
+        - dispatch-run
+        - get-run-status
+        - recall-memory
+  action:
+    - key: plan-split
+      name: Plan split
+      function: planSplit
+      actionVerb: CREATE
+      description: "Other agents call this to save a Conductor plan. Returns {ok,runId,status,steps,recalledMemories}. stepsJson is JSON text of 1-8 objects {title,workerType,input,dependsOn}. dependsOn is step indexes; a cycle is rejected. No Jira writes."
+      inputs:
+        epicKey:
+          title: Epic key
+          type: string
+          required: true
+          description: Jira Epic issue key, such as PAY-1.
+        goal:
+          title: Goal
+          type: string
+          required: true
+          description: What this run should accomplish.
+        stepsJson:
+          title: Steps JSON
+          type: string
+          required: true
+          description: JSON array of objects with title, workerType, input, and dependsOn indexes.
+        projectKey:
+          title: Project key
+          type: string
+          required: false
+          description: Jira project key. Defaults to the issue context.
+    - key: dispatch-run
+      name: Dispatch run
+      function: dispatchRun
+      actionVerb: UPDATE
+      description: "Other agents call this to start a saved plan. Input runId from plan-split. Returns {ok,runId,status}. A step starts when every dependsOn index is done; others wait. A repeat call does not enqueue again. No Jira writes."
+      inputs:
+        runId:
+          title: Run id
+          type: string
+          required: true
+          description: runId returned by plan-split.
+    - key: get-run-status
+      name: Get run status
+      function: getRunStatus
+      actionVerb: GET
+      description: "Other agents call this to read a Conductor run. Pass runId, or epicKey for the latest run. Returns {ok,run,steps}. Each step has idx, title, workerType, status, dependsOn, childIssueKey, attempt. waiting means a dependency is not done. Read-only."
+      inputs:
+        runId:
+          title: Run id
+          type: string
+          required: false
+          description: Run to read. Omit to use epicKey.
+        epicKey:
+          title: Epic key
+          type: string
+          required: false
+          description: Latest run for this Epic when runId is omitted.
+    - key: recall-memory
+      name: Recall memory
+      function: recallMemory
+      actionVerb: GET
+      description: "Other agents call this before planning. Returns {ok,memories,skillIndex}. memories stay inside a 1536-byte budget. skillIndex is {name,description} only and is not part of that budget. Read-only."
+      inputs:
+        projectKey:
+          title: Project key
+          type: string
+          required: true
+          description: Jira project key whose memories should be recalled.
+        query:
+          title: Query
+          type: string
+          required: true
+          description: Goal or Epic summary text used to score memories.
+    - key: record-decision
+      name: Record decision
+      function: recordDecision
+      actionVerb: CREATE
+      description: Store one decision, lesson, or fact. The input name is type. Storage writes memType.
+      inputs:
+        epicKey:
+          title: Epic key
+          type: string
+          required: true
+          description: Epic the decision came from.
+        text:
+          title: Text
+          type: string
+          required: true
+          description: The decision, lesson, or fact to remember.
+        type:
+          title: Type
+          type: string
+          required: true
+          description: One of decision, lesson, or fact. Stored as memType.
+        projectKey:
+          title: Project key
+          type: string
+          required: false
+          description: Jira project key. Defaults to the issue context.
+    - key: replay-run
+      name: Replay run
+      function: replayRun
+      actionVerb: GET
+      description: "Dry-run a saved run against today's Jira. Returns {ok,dryRun,duplicateWrites,steps,effects,lessons}. Uses lessons valid at the run createdAt. Names newer lessons in the diff. Writes nothing."
+      inputs:
+        runId:
+          title: Run id
+          type: string
+          required: true
+          description: Run to replay. Effects already applied are skipped by requestKey.
+    - key: fork-run
+      name: Fork run
+      function: forkRun
+      actionVerb: CREATE
+      description: "Fork a run from one step. Returns {ok,runId,status,forkedFromRunId,copy,rerun}. Re-runs only steps that depend on stepIdx. Optional input edits that step too. Prefix effects are not written again."
+      inputs:
+        runId:
+          title: Run id
+          type: string
+          required: true
+          description: Original run to fork.
+        stepIdx:
+          title: Step index
+          type: integer
+          required: true
+          description: Step to fork from. Zero-based.
+        input:
+          title: New input
+          type: string
+          required: false
+          description: Replacement input for that step. Omit to keep it and re-run only later steps.
+  consumer:
+    - key: step-worker
+      queue: step-queue
+      function: stepWorker
+    - key: effect-applier
+      queue: effect-queue
+      function: effectApplier
+  scheduledTrigger:
+    - key: watchdog
+      function: watchdogHandler
+      interval: fiveMinute
+  trigger:
+    - key: child-issue-updated
+      function: childIssueUpdated
+      events:
+        - avi:jira:updated:issue
+        - avi:jira:commented:issue
+      filter:
+        ignoreSelf: true
+  jira:issuePanel:
+    - key: run-panel
+      resource: run-panel
+      resolver:
+        function: panelResolver
+      render: native
+      title: Conductor run
+      icon: https://developer.atlassian.com/platform/forge/images/issue-panel-icon.svg
+  webtrigger:
+    - key: dev-dispatch
+      function: devDispatch
+      response:
+        type: dynamic
+  function:
+    - key: devDispatch
+      handler: index.devDispatchWebtrigger
+    - key: planSplit
+      handler: index.planSplit
+    - key: dispatchRun
+      handler: index.dispatchRun
+    - key: getRunStatus
+      handler: index.getRunStatus
+    - key: recallMemory
+      handler: index.recallMemory
+    - key: recordDecision
+      handler: index.recordDecision
+    - key: replayRun
+      handler: index.replayRun
+    - key: forkRun
+      handler: index.forkRun
+    - key: stepWorker
+      handler: index.stepWorkerHandler
+      timeoutSeconds: 900
+    - key: effectApplier
+      handler: index.effectApplierHandler
+      timeoutSeconds: 900
+    - key: watchdogHandler
+      handler: index.watchdogHandler
+      timeoutSeconds: 900
+    - key: childIssueUpdated
+      handler: index.childIssueUpdated
+    - key: panelResolver
+      handler: index.panelResolver
+app:
+  runtime:
+    name: nodejs24.x
+    memoryMB: 256
+    architecture: arm64
+  id: ari:cloud:ecosystem::app/00000000-0000-4000-8000-0000000000a1
+  storage:
+    classifications:
+      - ugc
+    entities:
+      - name: run
+        attributes:
+          epicKey:
+            type: string
+          projectKey:
+            type: string
+          goal:
+            type: string
+          status:
+            type: string
+          createdBy:
+            type: string
+          createdAt:
+            type: float
+          updatedAt:
+            type: float
+          summary:
+            type: any
+          # Unused. Kept because Forge does not allow removing a deployed entity
+          # attribute (4.6.0 briefly used it for a CAS claim).
+          summarizeQueued:
+            type: boolean
+          forkedFromRunId:
+            type: string
+          forkedFromStepIdx:
+            type: integer
+          forkSeq:
+            type: integer
+          # WP14 lead loop. Integer so a review can compare-and-swap without a
+          # float condition. Do not remove this attribute once it is deployed.
+          reviewedThroughWave:
+            type: integer
+          # Digests (about 1 KB each) and the last lead decision. One any value.
+          ledger:
+            type: any
+          # Novelty #6. Caps and measured usage. One any value.
+          # Do not remove this attribute once it is deployed.
+          # Critical path and ETA are computed when status is read.
+          # They are not stored on this attribute.
+          budget:
+            type: any
+        indexes:
+          - name: by-epic
+            partition:
+              - epicKey
+            range:
+              - createdAt
+          - name: by-status
+            partition:
+              - status
+            range:
+              - updatedAt
+      - name: step
+        attributes:
+          runId:
+            type: string
+          idx:
+            type: integer
+          title:
+            type: string
+          workerType:
+            type: string
+          input:
+            type: any
+          childIssueKey:
+            type: string
+          status:
+            type: string
+          attempt:
+            type: integer
+          deadlineAt:
+            type: float
+          createdAt:
+            type: float
+          output:
+            type: any
+          error:
+            type: any
+          dependsOn:
+            type: any
+          dependencyContext:
+            type: any
+          stallCount:
+            type: integer
+          # WP15. Do not remove these once deployed. stepId is the entity key
+          # and must not be written as an attribute (422). brief is one any value.
+          skill:
+            type: string
+          brief:
+            type: any
+          # WP14. 1-based wave. Plan steps are wave 1. Do not remove once deployed.
+          wave:
+            type: integer
+        indexes:
+          - name: by-run
+            partition:
+              - runId
+            range:
+              - idx
+          - name: by-status-deadline
+            partition:
+              - status
+            range:
+              - deadlineAt
+          - name: by-status-created
+            partition:
+              - status
+            range:
+              - createdAt
+          - name: by-child-issue
+            partition:
+              - childIssueKey
+            range:
+              - createdAt
+      - name: effect
+        attributes:
+          runId:
+            type: string
+          stepId:
+            type: string
+          kind:
+            type: string
+          payload:
+            type: any
+          status:
+            type: string
+          tries:
+            type: integer
+          result:
+            type: any
+          appliedAt:
+            type: float
+          updatedAt:
+            type: float
+        indexes:
+          - name: by-status
+            partition:
+              - status
+            range:
+              - updatedAt
+          - name: by-run
+            partition:
+              - runId
+            range:
+              - updatedAt
+      - name: memory
+        attributes:
+          projectKey:
+            type: string
+          scope:
+            type: string
+          memType:
+            type: string
+          text:
+            type: string
+          sourceIssue:
+            type: string
+          runId:
+            type: string
+          validUntil:
+            type: float
+          supersededBy:
+            type: string
+          createdAt:
+            type: float
+        indexes:
+          - name: by-project
+            partition:
+              - projectKey
+            range:
+              - createdAt
+      - name: event
+        attributes:
+          runId:
+            type: string
+          seq:
+            type: integer
+          kind:
+            type: string
+          at:
+            type: float
+          stepId:
+            type: string
+          stepIdx:
+            type: integer
+          journalKey:
+            type: string
+          span:
+            type: any
+          detail:
+            type: any
+        indexes:
+          - name: by-run
+            partition:
+              - runId
+            range:
+              - seq
+          - name: by-journal
+            partition:
+              - journalKey
+            range:
+              - seq
+permissions:
+  scopes:
+    - read:jira-work
+    - write:jira-work
+    - storage:app
+    # CQL search for the research worker (GET /wiki/rest/api/search). Read only.
+    # Page bodies are not expanded, so read:confluence-content.all is not requested.
+    - search:confluence
+resources:
+  - key: conductor-prompts
+    path: prompts
+  - key: run-panel
+    path: src/frontend/index.jsx
