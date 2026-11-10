@@ -27,7 +27,7 @@ Jira as the ledger · one confirm before anything is created · idempotent Jira 
 ## ✨ Features
 
 - **Restricted Router.** `conductor-router` is a `rovo:agent` whose whole tool list is seven actions; it never writes to Jira itself.
-- **Confirm before creation.** `plan-split` only stores a run as `planning`; `dispatch-run` is a separate call, so no child issue exists until the user agrees.
+- **Confirm before creation.** `plan-split` stores a run as `planning` and does not return a confirmation token. The Run panel mints a single-use HMAC and starts the run. `dispatch-run` without that token enqueues nothing.
 - **One child issue per step.** Each plan step becomes a Jira child issue plus a `step` record in the Custom Entity Store.
 - **Workers are consumers, not agents.** `step-worker` runs on `step-queue` with `timeoutSeconds: 900`; `workerType` picks a handler inside that consumer.
 - **Idempotent Jira writes.** Every create, comment, and transition is an `effect` keyed by `sha256(runId|stepId|kind|discriminator)`; the attempt number is not in the key.
@@ -116,12 +116,15 @@ Every Jira write goes through a gated, deduplicated path, and the effect of a pl
 | Step, model-call, and wall-clock hard stop | `runBudgetStop` in `src/run/budget.js` |
 | Architecture freeze (scope, queues, effects, storage shape) | [`docs/freeze.md`](docs/freeze.md) |
 | Human approval gate for risky runs | `src/run/approval.js` |
+| Panel HMAC confirmation (single-use, expiring, not in the tool result) | `src/safety/grants.js`, `src/resolvers/index.js` |
+| Budget stop drains pending forward effects | `src/run/budget.js` |
 | Deduplicated Jira writes via `requestKey` | `src/effects/requestKey.js` |
 | End-to-end simulated scenarios | `tests/simulation/scenarios.test.mjs` |
 
 ```sh
 npm ci && npm test      # full suite, no network, no Jira
 npm run test:headroom   # simulation scenarios with per-scenario KVS byte budgets
+npm run safety-eval     # irreversible-action table
 npm run safety-eval     # pass/fail table of the irreversible-action checks
 ```
 
@@ -264,7 +267,7 @@ Roadmap, taken from [`docs/milestones.md`](docs/milestones.md) and [`docs/novelt
 - [ ] Enable `rovo:mcp` for one external client and confirm `tools/list`
 - [ ] Finish the live end-to-end pass on the demo site (M4)
 - [ ] Add the `approval` DAG node and risk-triggered gates (novelty #5)
-- [ ] Store a `before` snapshot for transitions and field edits, then enable `restoreFields`
+- [x] Record prior scalar values on `setFields` and restore them with `restoreFields` (a transition already stores `before.statusName`)
 - [ ] Record the demo video and finish the Devpost copy (M5, M6)
 
 ## 🤝 Contributing

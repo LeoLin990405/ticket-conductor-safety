@@ -444,9 +444,11 @@ test('queue names, storage enums, fault names, and the watchdog gate stay on the
     'createIssue',
     'comment',
     'transition',
+    'setFields',
     'closeIssue',
     'recordRemovedComment',
     'restoreStatus',
+    'restoreFields',
   ]);
   assert.deepEqual(EVENT_KINDS, [
     'plan.created',

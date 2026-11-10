@@ -5,31 +5,51 @@ import { previewBlastRadius } from '../../blast/preview.js';
 import {
   acknowledgementText,
   confirmationToken,
-  evaluateDispatchAuthorization,
 } from '../guard.js';
+import { authorizeDispatch, CONFIRM_TTL_MS, issueDispatchGrant, resetConfirmationGrants } from '../grants.js';
 import { formatSafetyReport, runSafetyEval } from '../eval.js';
 
-test('the confirmation token changes when the blast-radius score changes', () => {
+test('a panel grant is single-use and the public card digest is not a token', () => {
+  resetConfirmationGrants();
+  const now = 1_700_000_000_000;
   const run = { runId: 'run-1', epicKey: 'PAY-1', projectKey: 'PAY', goal: 'refunds' };
   const steps = [
     { stepId: 's0', idx: 0, title: 'Research', workerType: 'research', status: 'queued', input: 'x' },
   ];
   const card = previewBlastRadius({ run, steps, planCard: '' });
-  const token = confirmationToken(card);
-  assert.equal(token, confirmationToken(card));
+  const digest = confirmationToken(card);
+  assert.equal(digest, confirmationToken(card));
   assert.equal(acknowledgementText(card).startsWith(`${card.risk.score} points`), true);
-  const refused = evaluateDispatchAuthorization({
+  const issued = issueDispatchGrant(card, { now, principal: 'person' });
+  assert.equal(issued.confirmToken.startsWith('v2.'), true);
+  assert.notEqual(issued.confirmToken, digest);
+  const digestRefused = authorizeDispatch({
     confirm: true,
     acknowledgeBlastRadius: acknowledgementText(card),
-    confirmToken: token.slice(0, -1) + (token.endsWith('a') ? 'b' : 'a'),
-  }, card);
-  assert.equal(refused.ok, false);
-  const accepted = evaluateDispatchAuthorization({
+    confirmToken: digest,
+  }, card, now);
+  assert.equal(digestRefused.ok, false);
+  const accepted = authorizeDispatch({
     confirm: true,
-    acknowledgeBlastRadius: acknowledgementText(card),
-    confirmToken: token,
-  }, card);
+    acknowledgeBlastRadius: issued.acknowledgement,
+    confirmToken: issued.confirmToken,
+  }, card, now);
   assert.equal(accepted.ok, true);
+  const reused = authorizeDispatch({
+    confirm: true,
+    acknowledgeBlastRadius: issued.acknowledgement,
+    confirmToken: issued.confirmToken,
+  }, card, now);
+  assert.equal(reused.ok, false);
+  assert.match(reused.reason, /already used/);
+  const later = issueDispatchGrant(card, { now, principal: 'person' });
+  const expired = authorizeDispatch({
+    confirm: true,
+    acknowledgeBlastRadius: later.acknowledgement,
+    confirmToken: later.confirmToken,
+  }, card, now + CONFIRM_TTL_MS);
+  assert.equal(expired.ok, false);
+  assert.match(expired.reason, /expired/);
 });
 
 test('safety-eval passes every irreversible-action property', async () => {

@@ -23,7 +23,7 @@ import {
 import { resetMemory } from '../../src/memory/index.js';
 import { STEP_DEADLINE_MS } from '../../src/run/dependencies.js';
 import { resetLocks } from '../../src/run/locks.js';
-import { startRun } from '../../src/run/stateMachine.js';
+import { startApproved } from '../../src/run/__tests__/harness.js';
 import { createFakeForgeSdk } from '../../src/store/__tests__/fakeForgeKvs.js';
 import {
   createForgeStore,
@@ -330,7 +330,7 @@ export async function savePlan(world, input) {
  * @param {string} runId
  */
 export async function dispatchAndDrain(world, runId) {
-  const started = await startRun(runId, world.dependencies);
+  const started = await startApproved(runId, world.dependencies);
   const stepResults = await world.drainAll();
   return { started, stepResults };
 }

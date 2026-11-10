@@ -85,11 +85,12 @@ The attempt number is not in the key, so a retry cannot mint a second child issu
 comment uses an empty step segment. The implementation is
 [`src/effects/requestKey.js`](../src/effects/requestKey.js).
 
-Forward kinds in `EFFECT_KINDS` today: `createIssue`, `comment`, `transition`.
-Compensating kinds: `closeIssue`, `recordRemovedComment`, `restoreStatus`. Compensations use the
-discriminator `undo:<forwardKind>:<forwardRequestKey>` and close children instead of deleting them.
-`setFields` and `restoreFields` are designed in [`blast-radius.md`](blast-radius.md) but are not in
-`EFFECT_KINDS` yet.
+Forward kinds in `EFFECT_KINDS`: `createIssue`, `comment`, `transition`, `setFields`.
+Compensating kinds: `closeIssue`, `recordRemovedComment`, `restoreStatus`, `restoreFields`.
+Compensations use the discriminator `undo:<forwardKind>:<forwardRequestKey>` and close children
+instead of deleting them. `setFields` stores the previous scalar values. `restoreFields` writes
+them back when the issue still holds what the run wrote. The design note is
+[`blast-radius.md`](blast-radius.md).
 
 Effect status values: `pending`, `applied`, `retrying`, `failed`. A failed effect is retried with
 backoff up to five times, then the step is marked `blocked`.

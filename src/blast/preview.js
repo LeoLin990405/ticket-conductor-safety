@@ -7,11 +7,13 @@
  * the Run panel resolver all call `previewBlastRadius` on steps they already
  * hold. The card is recomputed. It is not a KVS row.
  *
- * `enqueueEffect` accepts `createIssue`, `comment`, `transition`, and the
- * compensating kinds `closeIssue`, `recordRemovedComment`, and
- * `restoreStatus`. `planCompensations` still only describes the undo. The
- * caller enqueues those descriptors. `setFields` and `restoreFields` are
- * still descriptors only.
+ * `enqueueEffect` accepts `createIssue`, `comment`, `transition`,
+ * `setFields`, and the compensating kinds `closeIssue`,
+ * `recordRemovedComment`, `restoreStatus`, and `restoreFields`.
+ * `planCompensations` describes the undo. The caller enqueues those
+ * descriptors. `setFields` stores the previous scalar values on
+ * `result.before`. `restoreFields` writes them back when the issue still
+ * holds what this run wrote.
  *
  * Why a preview can exist before any write
  * ---------------------------------------
@@ -31,8 +33,8 @@
  *
  * `planCompensations` does not enqueue. The caller passes each descriptor
  * to `enqueueEffect`. The applier applies `closeIssue`,
- * `recordRemovedComment`, and `restoreStatus` (`EFFECT_KINDS` in
- * `src/store/types.js`, `src/effects/jira.js`).
+ * `recordRemovedComment`, `restoreStatus`, and `restoreFields`
+ * (`EFFECT_KINDS` in `src/store/types.js`, `src/effects/jira.js`).
  *
  * @module blast/preview
  */
@@ -143,7 +145,7 @@ export const COMMENT_TEMPLATES = Object.freeze({
  */
 export const CHECKLIST_SKILLS = Object.freeze(['risk-review', 'test-plan']);
 
-/** Forward kinds the preview knows. `setFields` is not in `EFFECT_KINDS` yet. */
+/** Forward kinds the preview knows. `setFields` is also an effect kind. */
 const FORWARD_KINDS = Object.freeze([
   'createIssue',
   'comment',
@@ -152,9 +154,8 @@ const FORWARD_KINDS = Object.freeze([
 ]);
 
 /**
- * Compensating kinds. Same queue, same request-key formula. The first three
- * are accepted by `enqueueEffect`. `restoreFields` stays a descriptor until
- * `setFields` is on the queue. Order of this list is not the apply order.
+ * Compensating kinds. Same queue, same request-key formula. `enqueueEffect`
+ * accepts every kind in this list. Order of this list is not the apply order.
  */
 const COMPENSATION_KINDS = Object.freeze([
   'closeIssue',
@@ -243,10 +244,9 @@ function requireText(value, field) {
  * plan citation pass no step). Discriminators here are strings. Object
  * discriminators stay in `requestKeyFor`; this preview does not use them.
  *
- * `requestKeyFor` accepts the original three kinds and `closeIssue`,
- * `recordRemovedComment`, and `restoreStatus`. It still rejects `setFields`
- * and `restoreFields`. For every kind both functions accept, the digest
- * matches. The unit test locks that.
+ * `requestKeyFor` accepts the same kinds as this function, including
+ * `setFields` and `restoreFields`. For every kind both functions accept,
+ * the digest matches. The unit test locks that.
  *
  * @param {{runId: string, stepId?: string|null, kind: string, discriminator?: string}} input
  * @returns {string}

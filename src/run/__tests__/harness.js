@@ -6,11 +6,38 @@
  * not on this branch), and an in-memory `step-queue`.
  */
 
+import { issueHumanConfirmation } from '../../safety/grants.js';
 import { createMemoryStore } from '../../store/index.js';
+import { startRun } from '../stateMachine.js';
 import {
   resetWorkerTypes,
   stepWorkerHandler,
 } from '../../worker/index.js';
+
+/**
+ * Start a run the way the Run panel does: mint a grant, then call `startRun`.
+ * `startRun` itself no longer has a path that skips the grant.
+ *
+ * @param {string} runId
+ * @param {object} overrides
+ */
+export async function startApproved(runId, overrides) {
+  const issued = await issueHumanConfirmation({
+    runId,
+    store: overrides?.store,
+    now: overrides?.now,
+    principal: 'test-harness',
+  });
+  if (!issued.ok) return startRun(runId, overrides);
+  return startRun(runId, {
+    ...overrides,
+    confirmation: {
+      confirm: true,
+      acknowledgeBlastRadius: issued.acknowledgement,
+      confirmToken: issued.confirmToken,
+    },
+  });
+}
 
 /**
  * @param {object} [options]

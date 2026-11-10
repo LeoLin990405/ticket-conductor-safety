@@ -30,7 +30,7 @@ import {
   replayRun,
 } from '../../src/actions/index.js';
 import { handoffGoal } from '../../src/actions/handoff.js';
-import { forkAcknowledgement, forkConfirmationToken } from '../../src/safety/guard.js';
+import { issueDispatchGrant, issueForkGrant, issueHumanConfirmation } from '../../src/safety/grants.js';
 import {
   configureEffects,
   effectApplierHandler,
@@ -273,40 +273,45 @@ export async function createWorld(options = {}) {
     throw new Error(`simulation forbids fetch(${target}). Ticket text is data.`);
   };
 
-  /** @type {Map<string, {acknowledgement: string, confirmToken: string}>} */
-  const issuedConfirmation = new Map();
+  /** @type {Map<string, object>} */
+  const cards = new Map();
 
   /**
    * @param {object|null|undefined} result
    */
-  function rememberConfirmation(result) {
-    if (
-      result
-      && typeof result.runId === 'string'
-      && typeof result.confirmToken === 'string'
-      && typeof result.acknowledgement === 'string'
-    ) {
-      issuedConfirmation.set(result.runId, {
-        acknowledgement: result.acknowledgement,
-        confirmToken: result.confirmToken,
-      });
+  function rememberCard(result) {
+    if (result && typeof result.runId === 'string' && result.blastRadius && typeof result.blastRadius === 'object') {
+      cards.set(result.runId, result.blastRadius);
     }
   }
 
   /**
+   * The simulated person approves on the Run panel. The token is minted
+   * here and is not taken from the action result. The card, when the
+   * action already returned it, is reused so this step does not add a
+   * store read.
+   *
    * @param {string} key
    * @param {Record<string, unknown>|null|undefined} payload
-   * @returns {Record<string, unknown>}
+   * @returns {Promise<Record<string, unknown>>}
    */
-  function withPersonConfirmation(key, payload) {
+  async function withPersonConfirmation(key, payload) {
     const body = payload && typeof payload === 'object' ? { ...payload } : {};
     const explicit = body.confirm !== undefined
       || body.confirmToken !== undefined
       || body.acknowledgeBlastRadius !== undefined;
     if (explicit) return body;
-    if (key === 'dispatch-run') {
-      const issued = issuedConfirmation.get(body.runId);
-      if (!issued) return body;
+    if (key === 'dispatch-run' && typeof body.runId === 'string') {
+      const known = cards.get(body.runId);
+      const issued = known
+        ? issueDispatchGrant(known, { now: () => clock.now, principal: 'simulated-person' })
+        : await issueHumanConfirmation({
+          runId: body.runId,
+          store,
+          now: () => clock.now,
+          principal: 'simulated-person',
+        });
+      if (!issued.ok) return body;
       return {
         ...body,
         confirm: true,
@@ -315,11 +320,18 @@ export async function createWorld(options = {}) {
       };
     }
     if (key === 'fork-run') {
+      const issued = issueForkGrant({
+        runId: body.runId,
+        stepIdx: body.stepIdx,
+        input: body.input,
+        now: () => clock.now,
+        principal: 'simulated-person',
+      });
       return {
         ...body,
         confirm: true,
-        acknowledgeBlastRadius: forkAcknowledgement(body.runId, body.stepIdx),
-        confirmToken: forkConfirmationToken(body.runId, body.stepIdx, body.input),
+        acknowledgeBlastRadius: issued.acknowledgement,
+        confirmToken: issued.confirmToken,
       };
     }
     return body;
@@ -343,10 +355,10 @@ export async function createWorld(options = {}) {
      *
      * `dispatch-run` and `fork-run` require a confirmation token. When the
      * payload does not mention `confirm`, `confirmToken`, or
-     * `acknowledgeBlastRadius`, this harness fills them in from the
-     * `plan-split` result it already holds. That is the simulated person
-     * agreeing to the card. A payload that sets any of those fields is
-     * sent unchanged, so a test can refuse or send a bad token.
+     * `acknowledgeBlastRadius`, this harness mints one the way the Run
+     * panel does. It does not read a token from the action result. A
+     * payload that sets any of those fields is sent unchanged, so a test
+     * can refuse or send a bad token.
      *
      * @param {string} key Manifest action key, such as `plan-split`.
      * @param {Record<string, unknown>} payload
@@ -358,8 +370,8 @@ export async function createWorld(options = {}) {
         return { ok: false, error: `unknown action ${key}`, code: 'UNKNOWN_ACTION' };
       }
       try {
-        const result = await handler(withPersonConfirmation(key, payload), context, runtime);
-        rememberConfirmation(result);
+        const result = await handler(await withPersonConfirmation(key, payload), context, runtime);
+        rememberCard(result);
         if (result && typeof result === 'object' && result.ok === false) return result;
         return result;
       } catch (error) {
@@ -372,15 +384,14 @@ export async function createWorld(options = {}) {
       }
     },
     /**
-     * Another agent hands a goal to Conductor. The handoff does not dispatch
-     * unless `input` echoes the confirmation token. This method remembers
-     * the token so a later `invoke('dispatch-run')` can act as the person.
+     * Another agent hands a goal to Conductor. The handoff does not dispatch.
+     * A later `invoke('dispatch-run')` mints a panel grant for this run.
      *
      * @param {Record<string, unknown>} input
      */
     async handoff(input) {
       const result = await handoffGoal(input, { principal: { accountId: 'account-demo' } }, runtime);
-      rememberConfirmation(result);
+      rememberCard(result);
       return result;
     },
     async drainEffects() {

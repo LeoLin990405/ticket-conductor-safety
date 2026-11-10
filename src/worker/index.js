@@ -36,12 +36,12 @@ import { recordFaultInjected, safeChaos } from '../chaos/counters.js';
 import { isFaultInjectionEnabled, takeKillWorker } from '../chaos/faults.js';
 import { demoHangDelayMs, shouldDemoHang } from '../watchdog/demo.js';
 import { briefForStep } from '../skills/brief.js';
-import { runBudgetStop } from '../run/budget.js';
+import { applyBudgetStop, runBudgetStop } from '../run/budget.js';
 import { SkillContractError } from '../skills/errors.js';
 import { tryLoadSkill } from '../skills/library.js';
 import { runSubAgent } from '../skills/runSubAgent.js';
 import { coalesceCommentEffects } from '../effects/commentBatch.js';
-import { transitionEffect } from './content.js';
+import { fieldEffect, transitionEffect } from './content.js';
 import { isApprovalGate } from '../run/approval.js';
 import {
   checkDepsWorker,
@@ -473,12 +473,7 @@ export async function stepWorkerHandler(event, overrides) {
     // enqueued, and the run is marked blocked so a retry does not continue.
     const budgetStop = runBudgetStop(ctx.run.budget, dependencies.now(), ctx.run.createdAt);
     if (budgetStop && (ctx.run.status === 'running' || ctx.run.status === 'blocked')) {
-      if (ctx.run.status === 'running') {
-        await dependencies.store.updateRun(ctx.run.runId, {
-          status: 'blocked',
-          budget: budgetStop.budget,
-        });
-      }
+      await applyBudgetStop(dependencies.store, ctx.run, budgetStop);
       const budgetError = new Error(`run budget exceeded (${budgetStop.reason})`);
       budgetError.code = 'BUDGET_EXCEEDED';
       budgetError.status = 'blocked';
@@ -593,8 +588,10 @@ export async function stepWorkerHandler(event, overrides) {
       // Append the plan's transition after the worker's own effects. A step
       // with no `transitionTo` adds nothing, so the effect list is unchanged.
       const plannedTransitions = transitionEffect(latest, ctx.run);
-      const effectsToQueue = plannedTransitions.length > 0
-        ? [...rawEffects, ...plannedTransitions]
+      const plannedFields = fieldEffect(latest, ctx.run);
+      const planned = [...plannedTransitions, ...plannedFields];
+      const effectsToQueue = planned.length > 0
+        ? [...rawEffects, ...planned]
         : rawEffects;
       // One completion, one list. Comments that name the same child become
       // one effect before any of them is pushed. A transition stays its own

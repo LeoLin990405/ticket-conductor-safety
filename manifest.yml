@@ -102,7 +102,7 @@ modules:
       name: Dispatch run
       function: dispatchRun
       actionVerb: UPDATE
-      description: "Start a saved plan. Requires boolean confirm, acknowledgeBlastRadius, and confirmToken from plan-split. A mismatch leaves the run planning and writes nothing. A repeat does not enqueue again."
+      description: "Start a saved plan. confirm must be boolean true. The Run panel issues confirmToken. plan-split does not return it. A mismatch leaves the run planning and writes nothing."
       inputs:
         runId:
           title: Run id
@@ -118,12 +118,12 @@ modules:
           title: Blast-radius acknowledgement
           type: string
           required: false
-          description: Echo plan-split acknowledgement.
+          description: Echo the acknowledgement line from plan-split.
         confirmToken:
           title: Confirmation token
           type: string
           required: false
-          description: Echo plan-split confirmToken.
+          description: HMAC from the Run panel. Not returned by plan-split. Single-use and expiring.
     - key: get-run-status
       name: Get run status
       function: getRunStatus
@@ -197,7 +197,7 @@ modules:
       name: Fork run
       function: forkRun
       actionVerb: CREATE
-      description: "Fork a run from one step. Requires boolean confirm, acknowledgeBlastRadius, and confirmToken. Re-runs steps that depend on stepIdx. A mismatch writes nothing. Prefix effects are not written again."
+      description: "Fork from one step. The Run panel issues confirmToken. It is single-use and expiring. A mismatch writes nothing. Prefix effects are not written again."
       inputs:
         runId:
           title: Run id
@@ -228,7 +228,7 @@ modules:
           title: Confirmation token
           type: string
           required: false
-          description: Token for this fork.
+          description: HMAC from the Run panel for this fork. Single-use and expiring.
   consumer:
     - key: step-worker
       queue: step-queue

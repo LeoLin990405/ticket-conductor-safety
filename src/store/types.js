@@ -84,7 +84,9 @@ export const EFFECT_STATUSES = Object.freeze([
  * a delete-issue scope. `recordRemovedComment` deletes a comment; the effect
  * row is the record that the comment was removed. `restoreStatus` transitions
  * an issue this run did not create back to the status stored on the forward
- * effect. `setFields` / `restoreFields` are still descriptors only.
+ * effect. `setFields` writes named scalar fields and stores the previous
+ * values on `result.before`. `restoreFields` writes those values back when
+ * the issue still holds what this run wrote.
  *
  * @constant {ReadonlyArray<EffectKind>}
  */
@@ -92,9 +94,11 @@ export const EFFECT_KINDS = Object.freeze([
   'createIssue',
   'comment',
   'transition',
+  'setFields',
   'closeIssue',
   'recordRemovedComment',
   'restoreStatus',
+  'restoreFields',
 ]);
 
 /**
@@ -160,7 +164,7 @@ export const MEMORY_SCOPES = Object.freeze(['project', 'epic']);
 /**
  * A Jira mutation performed exactly once per deterministic request key.
  *
- * @typedef {'createIssue'|'comment'|'transition'|'closeIssue'|'recordRemovedComment'|'restoreStatus'} EffectKind
+ * @typedef {'createIssue'|'comment'|'transition'|'setFields'|'closeIssue'|'recordRemovedComment'|'restoreStatus'|'restoreFields'} EffectKind
  */
 
 /**

@@ -4,10 +4,11 @@
  * Guarded by the `DEV_WEBTRIGGER_SECRET` environment variable, which is set
  * only in the development environment (`forge variables set -e development`).
  * Without it, or with a wrong `x-dev-secret` header, it answers 403.
- * Body: {"runId", "confirm": true, "acknowledgeBlastRadius", "confirmToken"}
- * starts the run. A missing token answers 409 and does not enqueue.
- * Body: {"plan": {epicKey, goal, stepsJson}} plans only until those three
- * confirmation fields are also present.
+ * Body: {"runId", "approve": true} starts the run. The token is minted in
+ * this request and is not written on the response. A body that omits both
+ * `approve` and a panel token answers 409 and does not enqueue.
+ * Body: {"plan": {epicKey, goal, stepsJson}} plans only until `approve` is
+ * also present.
  * Add "statusOnly": true to only read the run.
  * Body: {"injectFault": {"type": "kill-worker"|"duplicate-effect"|"jira-429"}}
  * arms one chaos fault and returns. It does not plan or dispatch. The secret
@@ -15,6 +16,8 @@
  * and production or staging (`CONDUCTOR_APP_ENV`) is refused.
  */
 import { dispatchRun, forkRun, planSplit } from '../actions/index.js';
+import { issueForkGrant, issueHumanConfirmation } from '../safety/grants.js';
+import { getStore } from '../store/index.js';
 import { injectFault } from '../chaos/faults.js';
 import { getRun, listSteps } from '../store/index.js';
 
@@ -70,11 +73,33 @@ export async function devDispatchWebtrigger(request) {
       return reply(200, await replayRun(body.replayRun));
     }
     if (body.forkRun && typeof body.forkRun === 'object') {
-      const forked = await forkRun(body.forkRun);
-      if (!forked || forked.ok === false) {
-        return reply(409, forked || { error: 'confirmation required', code: 'CONFIRMATION_REQUIRED' });
+      let payload = body.forkRun;
+      if (body.approve === true && !payload.confirmToken) {
+        const issued = issueForkGrant({
+          runId: payload.runId,
+          stepIdx: payload.stepIdx,
+          input: payload.input,
+          now: () => Date.now(),
+          principal: 'dev-webtrigger',
+        });
+        payload = {
+          ...payload,
+          confirm: true,
+          acknowledgeBlastRadius: issued.acknowledgement,
+          confirmToken: issued.confirmToken,
+        };
       }
-      return reply(200, forked);
+      const forked = await forkRun(payload);
+      if (!forked || forked.ok === false) {
+        return reply(409, {
+          ok: false,
+          code: forked?.code || 'CONFIRMATION_REQUIRED',
+          error: forked?.error || 'confirmation required',
+          runId: payload.runId,
+        });
+      }
+      const { confirmToken: _token, acknowledgement: _line, ...safe } = forked;
+      return reply(200, safe);
     }
     if (typeof body.listEvents === 'string') {
       const { getStore } = await import('../store/index.js');
@@ -94,16 +119,42 @@ export async function devDispatchWebtrigger(request) {
     }
     if (body.statusOnly !== true) {
       console.log(`[dev-dispatch] dispatchRun ${runId}`);
+      let confirm = body.confirm;
+      let acknowledgeBlastRadius = body.acknowledgeBlastRadius;
+      let confirmToken = body.confirmToken;
+      if (body.approve === true && !confirmToken) {
+        const issued = await issueHumanConfirmation({
+          runId,
+          store: getStore(),
+          now: () => Date.now(),
+          principal: 'dev-webtrigger',
+        });
+        if (!issued.ok) {
+          return reply(409, {
+            ok: false,
+            code: issued.code,
+            error: issued.reason,
+            runId,
+            acknowledgement: planned?.acknowledgement,
+          });
+        }
+        confirm = true;
+        acknowledgeBlastRadius = issued.acknowledgement;
+        confirmToken = issued.confirmToken;
+      }
       const dispatched = await dispatchRun({
         runId,
-        confirm: body.confirm,
-        acknowledgeBlastRadius: body.acknowledgeBlastRadius,
-        confirmToken: body.confirmToken,
+        confirm,
+        acknowledgeBlastRadius,
+        confirmToken,
       });
       if (!dispatched || dispatched.ok === false) {
         return reply(409, {
-          ...(dispatched || { error: 'confirmation required', code: 'CONFIRMATION_REQUIRED' }),
-          confirmToken: planned?.confirmToken,
+          ok: false,
+          code: dispatched?.code || 'CONFIRMATION_REQUIRED',
+          error: dispatched?.error || 'confirmation required',
+          runId,
+          status: dispatched?.status,
           acknowledgement: planned?.acknowledgement,
         });
       }

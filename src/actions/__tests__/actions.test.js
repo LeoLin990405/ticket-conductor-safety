@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { requestKeyFor } from '../../effects/requestKey.js';
+import { issueHumanConfirmation } from '../../safety/grants.js';
 import { createMemoryStore, resetStore, setStore } from '../../store/index.js';
 import { resetWorkerTypes } from '../../worker/index.js';
 import {
@@ -132,8 +133,16 @@ test('dispatchRun returns the preview computed before enqueue and does not call 
       steps: [{ title: 'Research refunds', workerType: 'research', input: 'x' }],
     });
     assert.equal(planned.blastRadius.phase, 'preview');
-    assert.equal(typeof planned.confirmToken, 'string');
+    assert.equal(planned.confirmToken, undefined);
+    assert.equal(Object.prototype.hasOwnProperty.call(planned, 'confirmToken'), false);
     assert.match(planned.acknowledgement, /points/);
+    const issued = await issueHumanConfirmation({
+      runId: planned.runId,
+      store,
+      now: () => 1_700_000_000_000,
+      principal: 'person',
+    });
+    assert.equal(issued.ok, true);
     const refused = await dispatchRun(
       { runId: planned.runId, confirm: true },
       {},
@@ -155,8 +164,8 @@ test('dispatchRun returns the preview computed before enqueue and does not call 
       {
         runId: planned.runId,
         confirm: true,
-        acknowledgeBlastRadius: planned.acknowledgement,
-        confirmToken: planned.confirmToken,
+        acknowledgeBlastRadius: issued.acknowledgement,
+        confirmToken: issued.confirmToken,
       },
       {},
       {
@@ -209,12 +218,18 @@ test('dispatchRun ignores a second call once the run is running', async () => {
       enqueueEffect: async () => ({ requestKey: 'k', created: true }),
       enqueueStep: async () => ({ jobId: 'job' }),
     };
+    const issued = await issueHumanConfirmation({
+      runId: planned.runId,
+      store,
+      now: () => 1_700_000_000_000,
+      principal: 'person',
+    });
     const started = await dispatchRun(
       {
         runId: planned.runId,
         confirm: true,
-        acknowledgeBlastRadius: planned.acknowledgement,
-        confirmToken: planned.confirmToken,
+        acknowledgeBlastRadius: issued.acknowledgement,
+        confirmToken: issued.confirmToken,
       },
       {},
       overrides,

@@ -11,9 +11,9 @@
  *
  *   node demo/mcp-client.mjs --local --epic PAY-1 --project PAY --goal "..."
  *     Recall and plan against the in-memory store. The run stays
- *     `planning`. Add `--confirm` to echo the token into `dispatch-run`.
- *     Queues are stubbed, so no Jira issue is created. This is the path
- *     the unit test executes.
+ *     `planning`. Add `--confirm` to approve the way the Run panel does.
+ *     The token is not read from `plan-split`. Queues are stubbed, so no
+ *     Jira issue is created. This is the path the unit test executes.
  *
  * This process never posts to Atlassian. Cursor and Claude are the live
  * clients: they open the OAuth screen themselves. A live call also needs
@@ -34,6 +34,7 @@ import { pathToFileURL } from 'node:url';
 
 import { handoffGoal, defaultStepsJson } from '../src/actions/handoff.js';
 import { dispatchRun, getRunStatus } from '../src/actions/index.js';
+import { issueHumanConfirmation } from '../src/safety/grants.js';
 import { REUSABLE_TOOL_KEYS } from '../src/actions/contract.js';
 import { createMemoryStore, setStore } from '../src/store/index.js';
 
@@ -114,7 +115,7 @@ export function plannedToolCalls(input) {
         runId: '{{plan-split.runId}}',
         confirm: true,
         acknowledgeBlastRadius: '{{plan-split.acknowledgement}}',
-        confirmToken: '{{plan-split.confirmToken}}',
+        confirmToken: '{{run-panel.confirmToken}}',
       },
     },
     {
@@ -191,11 +192,18 @@ export async function runLocalHandoff(input) {
     overrides,
   );
   if (input.confirm !== true || planned.ok === false) return planned;
+  const issued = await issueHumanConfirmation({
+    runId: planned.runId,
+    store,
+    now: () => 1_700_000_000_000,
+    principal: 'mcp-local-demo',
+  });
+  if (!issued.ok) return { ok: false, code: issued.code, error: issued.reason, runId: planned.runId };
   const dispatched = await dispatchRun({
     runId: planned.runId,
     confirm: true,
-    acknowledgeBlastRadius: planned.acknowledgement,
-    confirmToken: planned.confirmToken,
+    acknowledgeBlastRadius: issued.acknowledgement,
+    confirmToken: issued.confirmToken,
   }, context, overrides);
   const status = await getRunStatus({ runId: planned.runId });
   return {

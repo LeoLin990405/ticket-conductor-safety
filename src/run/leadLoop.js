@@ -33,7 +33,7 @@ import { briefForStep } from '../skills/brief.js';
 import { bulletList, doc, heading, paragraph, textNode } from '../worker/adf.js';
 import { fenceUntrusted, clip } from '../worker/guard.js';
 import { completeText } from '../worker/llm.js';
-import { applyRunBudget, commitRunBudget, modelCallsExhausted, runBudgetStop } from './budget.js';
+import { applyBudgetStop, applyRunBudget, commitRunBudget, modelCallsExhausted, runBudgetStop } from './budget.js';
 import {
   MAX_STEPS,
   MAX_WAVES,
@@ -431,11 +431,8 @@ async function spawnWave(dependencies, run, predecessors, suggestions, wave, dig
   // Hitting the cap means this wave must not add another child issue.
   // A full model-call cap or a blown wall clock stops the spawn too.
   if (stop || usedSteps >= maxSteps) {
-    if (stop && run.status === 'running') {
-      await dependencies.store.updateRun(run.runId, {
-        status: 'blocked',
-        budget: stop.budget,
-      });
+    if (stop) {
+      await applyBudgetStop(dependencies.store, run, stop);
     }
     return [];
   }

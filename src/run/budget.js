@@ -31,12 +31,15 @@
  * {@link runBudgetStop} is what the state machine, the worker, and the lead
  * consult before the next model call or Jira enqueue. A counter that is
  * already over its cap does not by itself rewrite `run.status` here. The
- * caller that is about to write sets `blocked` and skips the write. Equal
- * to a cap is still inside, except model calls: the next chat is refused
- * once `usedModelCalls` has reached `maxModelCalls`. The critical path, the
- * ETA, and the one-pair merge live in `criticalPath.js` and run from
- * `plan-split` before the steps are stored. They are not written onto this
- * object.
+ * caller that is about to write sets `blocked`, marks the run on
+ * {@link noteBudgetStop}, and {@link cancelPendingForwardEffects} fails
+ * every pending forward effect so a queued create, comment, transition, or
+ * field edit does not reach Jira. Compensating undo is not cancelled.
+ * Equal to a cap is still inside, except model calls: the next chat is
+ * refused once `usedModelCalls` has reached `maxModelCalls`. The critical
+ * path, the ETA, and the one-pair merge live in `criticalPath.js` and run
+ * from `plan-split` before the steps are stored. They are not written onto
+ * this object.
  *
  * Chaos counters (novelty #7) share this same `any` value so the panel
  * does not need a new attribute. `chaos` is `{injected, healed,
@@ -461,6 +464,133 @@ export async function commitRunBudget(store, runId, delta, now) {
     startedAt: run.createdAt,
   });
   return store.updateRun(runId, { budget });
+}
+
+/**
+ * Forward kinds a budget stop must not let reach Jira. Compensations stay
+ * eligible so a person can still undo a write that already landed.
+ *
+ * @constant {ReadonlySet<string>}
+ */
+const FORWARD_EFFECT_KINDS = new Set([
+  'createIssue',
+  'comment',
+  'transition',
+  'setFields',
+]);
+
+/** Run ids whose pending forward effects must fail closed. @type {Set<string>} */
+const budgetStops = new Set();
+
+/**
+ * @param {string} runId
+ * @returns {void}
+ */
+export function noteBudgetStop(runId) {
+  if (typeof runId === 'string' && runId.length > 0) budgetStops.add(runId);
+}
+
+/**
+ * @param {string} runId
+ * @returns {boolean}
+ */
+export function isBudgetStopNoted(runId) {
+  return typeof runId === 'string' && budgetStops.has(runId);
+}
+
+/**
+ * @param {string} kind
+ * @returns {boolean}
+ */
+export function isForwardEffect(kind) {
+  return FORWARD_EFFECT_KINDS.has(kind);
+}
+
+/**
+ * Forget stop marks. The safety table calls this between cases.
+ *
+ * @returns {void}
+ */
+export function resetBudgetStops() {
+  budgetStops.clear();
+}
+
+/**
+ * Mark one pending or retrying forward effect failed. An `applying` row is
+ * left alone: that invocation may already be inside the Jira call.
+ *
+ * @param {{updateEffect: Function, getEffect?: Function}} store
+ * @param {{requestKey?: string, kind?: string, status?: string}} effect
+ * @param {string} [reason]
+ * @returns {Promise<object|null|undefined>}
+ */
+export async function refuseEffectForBudgetStop(store, effect, reason) {
+  if (!effect || !isForwardEffect(effect.kind)) return effect;
+  if (effect.status !== 'pending' && effect.status !== 'retrying') return effect;
+  try {
+    return await store.updateEffect(effect.requestKey, {
+      status: 'failed',
+      result: {
+        name: 'BudgetStopped',
+        message: `budget stop drained this effect (${reason || 'stop'})`,
+        cancelled: true,
+      },
+    }, { expectedStatus: effect.status });
+  } catch (error) {
+    if (error?.code === 'CONFLICT' || error?.name === 'ConflictError') {
+      return typeof store.getEffect === 'function'
+        ? store.getEffect(effect.requestKey)
+        : effect;
+    }
+    throw error;
+  }
+}
+
+/**
+ * Fail every pending or retrying forward effect on the run. Queue messages
+ * that arrive later see `failed` and do not call Jira.
+ *
+ * @param {{listEffectsByRun: Function, updateEffect: Function, getEffect?: Function}} store
+ * @param {string} runId
+ * @param {string} [reason]
+ * @returns {Promise<string[]>}
+ */
+export async function cancelPendingForwardEffects(store, runId, reason) {
+  if (!store || typeof store.listEffectsByRun !== 'function') return [];
+  const effects = await store.listEffectsByRun(runId);
+  /** @type {string[]} */
+  const cancelled = [];
+  for (const effect of effects) {
+    if (!effect || !isForwardEffect(effect.kind)) continue;
+    if (effect.status !== 'pending' && effect.status !== 'retrying') continue;
+    const updated = await refuseEffectForBudgetStop(store, effect, reason);
+    if (updated?.status === 'failed' && typeof effect.requestKey === 'string') {
+      cancelled.push(effect.requestKey);
+    }
+  }
+  return cancelled;
+}
+
+/**
+ * Record the stop, block a planning or running run, and drain forward effects.
+ *
+ * @param {{updateRun: Function, listEffectsByRun: Function, updateEffect: Function, getEffect?: Function}} store
+ * @param {{runId: string, status?: string}} run
+ * @param {{reason: string, budget: object}} stop
+ * @returns {Promise<object>}
+ */
+export async function applyBudgetStop(store, run, stop) {
+  if (!run?.runId || !stop) return run;
+  noteBudgetStop(run.runId);
+  let next = run;
+  if (run.status === 'running' || run.status === 'planning') {
+    next = await store.updateRun(run.runId, {
+      status: 'blocked',
+      budget: stop.budget,
+    });
+  }
+  await cancelPendingForwardEffects(store, run.runId, stop.reason);
+  return next || run;
 }
 
 /**

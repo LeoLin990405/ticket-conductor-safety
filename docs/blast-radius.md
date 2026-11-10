@@ -15,7 +15,7 @@ This note matches the code. The pure functions live in `src/blast/preview.js`. T
 | The run reaches done | `comment` on the Epic | `memory:epic-comment` |
 | `step.input.transitionTo` is set | `transition` | the template in `preview.js` |
 
-`setFields` is listed on the card when `step.input.fields` is set, so the score can see it. It is not in `EFFECT_KINDS` (`src/store/types.js`). The applier does not edit arbitrary fields. `restoreFields` is the matching descriptor and is not enqueued.
+`setFields` is listed on the card when `step.input.fields` is set, and it is in `EFFECT_KINDS`. The step worker enqueues it for scalar values (string, number, boolean, or null). The applier reads the issue, stores those previous values on `result.before`, and PUTs only the named fields. `restoreFields` writes the previous values back when the issue still holds what the run wrote. A field that has moved since then is left as it is.
 
 The request key is `sha256("<runId>|<stepId>|<kind>|<discriminator>")` from `requestKeyFor` (`src/effects/requestKey.js`). The attempt number is not part of it.
 
@@ -29,27 +29,27 @@ Score, certain rows only:
 
 ## Confirmation before any agent-facing write
 
-`plan-split` returns `acknowledgement` and `confirmToken` next to `blastRadius`. The acknowledgement is the line
+`plan-split` returns `acknowledgement` next to `blastRadius`. It does not return `confirmToken`. The acknowledgement is the line
 
 ```text
 <score> points, <issues> issues, <transitions> transitions, <field changes> field changes
 ```
 
-from `acknowledgementText`. The token is `sha256` of the run id, the Epic key, that line, and the sorted request keys of `createIssue`, `transition`, and `setFields` rows (`confirmationToken`). Comment keys are not in the hash.
+from `acknowledgementText`. `confirmationToken` is still the sha256 of the run id, the Epic key, that line, and the sorted request keys of `createIssue`, `transition`, and `setFields` rows. Comment keys are not in the hash. That digest is public. It is not a grant.
 
-`dispatch-run` passes the payload to `startRun` with `requireConfirmation`. `startRun` recomputes the card from the stored steps and calls `evaluateDispatchAuthorization`. The run leaves `planning` only when all of these are true:
+The Run panel (`approveRun` in `src/resolvers/index.js`) is the human surface. It requires the Forge account id on the resolver context, mints an HMAC (`v2.<id>.<mac>`) under `CONDUCTOR_CONFIRM_SECRET` or a process-local random key, and consumes it inside the same invocation. The response does not include the token. A grant expires after 15 minutes and a second use is refused (`src/safety/grants.js`). The grant table is process-local, so a token copied into another instance fails closed.
+
+`dispatch-run` passes the payload to `startRun`. `startRun` always recomputes the card and calls `authorizeDispatch`. There is no flag that skips the check. The run leaves `planning` only when all of these are true:
 
 - `confirm` is the boolean `true` (the string `"true"` is refused);
 - `acknowledgeBlastRadius` equals the acknowledgement line;
-- `confirmToken` equals the token for this card.
+- `confirmToken` is an unused, unexpired HMAC for this card.
 
-Otherwise the handler returns `{ ok: false, code: 'CONFIRMATION_REQUIRED', status: 'planning' }` and enqueues nothing. A second call after the run has left `planning` does not enqueue again, which is the existing dispatch dedupe.
+Otherwise the handler returns `{ ok: false, code: 'CONFIRMATION_REQUIRED', status: 'planning' }` and enqueues nothing. A second call after the run has left `planning` does not enqueue again.
 
-`handoffGoal` (`src/actions/handoff.js`) never dispatches. The token is created inside that call, so the caller cannot have echoed it yet. `fork-run` requires its own acknowledgement (`fork <runId> from step <stepIdx>`) and token (`evaluateForkAuthorization`). The dev webtrigger calls the same handlers and answers 409 when the token is missing (`src/dev/devDispatch.js`).
+`handoffGoal` never dispatches and does not return a token. `fork-run` requires its own HMAC (`authorizeFork`). After that check, `src/recorder/fork.js` mints a dispatch grant for the new run and does not return it. The dev webtrigger answers 409 without a token. `approve: true` plus the development secret mints and consumes a grant in that request and does not echo the token (`src/dev/devDispatch.js`).
 
-The token is not a secret from the model. `plan-split` returns it, and a caller that copies it can pass the check. The router prompt (`prompts/router.md`) and the playbook (`prompts/conductor-playbook/SKILL.md`) forbid that copy until a later user message agrees to the plan that was shown. "Plan and run" is not that agreement. The handler is what stops a call that omits the token. `startRun` without `requireConfirmation` is the internal transition used by tests after a caller has already been checked. It is not a Rovo action.
-
-`npm run safety-eval` prints a pass/fail table of these refusals, including the string `"true"`, a wrong acknowledgement, a wrong token, handoff, fork, and a wall-clock stop.
+The router prompt and the playbook tell the model that it will not receive `confirmToken` and that "plan and run" is not a confirmation. `npm run safety-eval` prints the refusal table, including the public digest, a reused token, an expired token, a bare `startRun`, the panel path, a drained budget stop, and `setFields` undo.
 
 ## Gated children are not created up front
 
@@ -66,8 +66,9 @@ The token is not a secret from the model. `plan-split` returns it, and a caller 
 | `closeIssue` | `createIssue` | Transition to Done, then add the label `conductor-rolled-back`. Never `DELETE /rest/api/3/issue`. |
 | `recordRemovedComment` | `comment` | `DELETE` the comment. The effect row stays. |
 | `restoreStatus` | `transition` on an issue this run did not create | Transition back only when the issue is still in the status the run left it in. |
+| `restoreFields` | `setFields` on an issue this run did not create | PUT the previous scalar values only when the issue still holds what the run wrote. |
 
-`restoreFields` is not applied. There is no field-edit route in `src/effects/jira.js`. Closed children remain in Jira, labelled. Memory rows and flight-recorder events are not deleted. The Epic memory comment is a comment effect and is removed when undo runs. The scenario `blast undo returns the board to the seed` checks the seed issues, the labelled residue, and that no issue DELETE was called.
+Closed children remain in Jira, labelled. Memory rows and flight-recorder events are not deleted. The Epic memory comment is a comment effect and is removed when undo runs. The scenario `blast undo returns the board to the seed` checks the seed issues, the labelled residue, and that no issue DELETE was called.
 
 ## Budgets fail closed
 
@@ -79,13 +80,15 @@ The token is not a secret from the model. `plan-split` returns it, and a caller 
 - The step worker (`src/worker/index.js`) does the same before it comments, transitions, or calls the model.
 - `completeText` (`src/worker/llm.js`) does not call `chat` when the caller passes a budget that is exhausted. The meter is not incremented.
 - `spawnWave` (`src/run/leadLoop.js`) does not create another child when the step cap is full, the model-call cap is full, or the wall clock is past.
+- The same stop fails pending and retrying `createIssue`, `comment`, `transition`, and `setFields` rows. The applier also refuses a forward effect when the run is already noted, so a message still on the queue does not call Jira. Compensating undo is not part of that drain.
 
 `commitRunBudget` still only records. A planning run that is handed a huge counter does not change status by that write alone. The next write is what stops. Caps are `maxSteps` 8, `maxModelCalls` 28, `wallClockMs` 8 times the 12 minute step deadline.
 
 ## What is still out of scope
 
-- `setFields` and `restoreFields` are card descriptors only.
-- Undo does not delete issues and does not remove memory rows.
-- The confirmation token is visible to the model in the `plan-split` result. The server rejects a missing or mismatched token. It cannot see whether a later chat turn was a person.
-- `startRun` without `requireConfirmation` can still enqueue. The Rovo actions, handoff, and the dev webtrigger do not take that path.
+- Undo does not delete issues and does not remove memory rows or flight-recorder events.
+- `setFields` writes scalars only. An array or an ADF value is refused. A child this run created is closed instead of field-restored.
+- The grant table is process-local. The panel consumes the token in the same invocation. Another instance does not see it, which fails closed. A shared `CONDUCTOR_CONFIRM_SECRET` does not by itself share the used-token row.
+- An effect already in `applying` when a budget stop is noted may finish the Jira call it has started. Pending and retrying forward effects are failed.
+- `src/recorder/fork.js` mints the dispatch grant for the new run after the fork action has checked the fork grant. Calling that function directly is not a Rovo action.
 - Simulation only. The fake Jira is the board in `tests/simulation/fakes.mjs`. `CONDUCTOR_LLM` stays off unless a scenario passes a scripted model.

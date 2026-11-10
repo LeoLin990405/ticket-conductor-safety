@@ -12,10 +12,10 @@ import {
   dependencyContextFor,
   normalizePlanGraph,
 } from '../graph.js';
-import { reportStep, startRun } from '../stateMachine.js';
+import { reportStep } from '../stateMachine.js';
 import { registerWorkerType, resetWorkerTypes } from '../../worker/index.js';
 
-import { createHarness } from './harness.js';
+import { createHarness, startApproved } from './harness.js';
 
 test.afterEach(() => {
   resetWorkerTypes();
@@ -101,7 +101,7 @@ test('startRun enqueues independent steps and holds the step that depends on the
     { title: 'Check dependencies', workerType: 'check-deps', input: {}, dependsOn: [2] },
   ]);
 
-  await startRun(run.runId, harness.dependencies);
+  await startApproved(run.runId, harness.dependencies);
 
   assert.deepEqual(
     harness.stepEvents.map((event) => event.stepId),
@@ -146,7 +146,7 @@ test('a failed dependency does not start the step that waits on it', async () =>
     { title: 'Research', workerType: 'research', input: {} },
     { title: 'Draft', workerType: 'draft-spec', input: {}, dependsOn: [0] },
   ]);
-  await startRun(run.runId, harness.dependencies);
+  await startApproved(run.runId, harness.dependencies);
   const reported = await reportStep(
     first.stepId,
     { status: 'failed', error: { message: 'nope' } },
@@ -165,7 +165,7 @@ test('startRun rejects a stored cycle and leaves the run in planning', async () 
     { title: 'B', workerType: 'draft-spec', input: {}, dependsOn: [0] },
   ]);
   await assert.rejects(
-    () => startRun(run.runId, harness.dependencies),
+    () => startApproved(run.runId, harness.dependencies),
     /cycle/,
   );
   assert.equal((await harness.store.getRun(run.runId)).status, 'planning');
@@ -184,7 +184,7 @@ test('the worker receives dependency outputs on the step it is given', async () 
     { title: 'Research refunds', workerType: 'research', input: {} },
     { title: 'Capture', workerType: 'capture', input: {}, dependsOn: [0] },
   ]);
-  await startRun(run.runId, harness.dependencies);
+  await startApproved(run.runId, harness.dependencies);
   assert.equal(harness.stepEvents.length, 1);
 
   await harness.processAll();

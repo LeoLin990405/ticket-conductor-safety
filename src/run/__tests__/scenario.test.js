@@ -10,14 +10,13 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { resetLocks } from '../locks.js';
-import { startRun } from '../stateMachine.js';
 import {
   registerWorkerType,
   resetWorkerTypes,
   stepWorkerHandler,
 } from '../../worker/index.js';
 
-import { createHarness } from './harness.js';
+import { createHarness, startApproved } from './harness.js';
 
 test.afterEach(() => {
   resetWorkerTypes();
@@ -38,7 +37,7 @@ test('scenario: a four-step run reaches done and produces the Epic summary', asy
     { title: 'Research competitors', workerType: 'research', input: {} },
   ]);
 
-  const startedRun = await startRun(run.runId, harness.dependencies);
+  const startedRun = await startApproved(run.runId, harness.dependencies);
   assert.equal(startedRun.status, 'running');
   assert.equal(harness.stepEvents.length, 4);
 
@@ -65,7 +64,7 @@ test('scenario: a four-step run reaches done and produces the Epic summary', asy
   assert.match(createEffects[0].payload.description, /Allowed tools: searchIssues/);
 
   // Dispatch is idempotent: a second startRun must not queue the steps twice.
-  const secondStart = await startRun(run.runId, harness.dependencies);
+  const secondStart = await startApproved(run.runId, harness.dependencies);
   assert.equal(secondStart.status, 'running');
   assert.equal(harness.stepEvents.length, 4);
 
@@ -116,7 +115,7 @@ test('scenario: a failed step blocks the run and the failing worker is recorded'
     throw new Error('worker exploded');
   });
 
-  await startRun(run.runId, harness.dependencies);
+  await startApproved(run.runId, harness.dependencies);
   const results = await harness.processAll();
 
   const failed = results.find((result) => result.status === 'failed');
@@ -154,7 +153,7 @@ test('scenario: a duplicate step event is a no-op', async () => {
   await harness.createSteps(run.runId, [
     { title: 'Count me', workerType: 'counted', input: {} },
   ]);
-  await startRun(run.runId, harness.dependencies);
+  await startApproved(run.runId, harness.dependencies);
 
   const [event] = harness.stepEvents;
   const first = await stepWorkerHandler({ body: event }, harness.dependencies);
@@ -188,7 +187,7 @@ test('stale attempt exits before running the worker or emitting effects', async 
   const [step] = await harness.createSteps(run.runId, [
     { title: 'Count me', workerType: 'counted', input: {} },
   ]);
-  await startRun(run.runId, harness.dependencies);
+  await startApproved(run.runId, harness.dependencies);
 
   // Simulate the watchdog incrementing the attempt before this older event is
   // delivered. The event still says attempt 0.
@@ -231,7 +230,7 @@ test('two comments for one child are enqueued as one effect and the transition s
       input: { transitionTo: 'Done' },
     },
   ]);
-  await startRun(run.runId, harness.dependencies);
+  await startApproved(run.runId, harness.dependencies);
   const result = await harness.processNext();
   assert.equal(result.status, 'done');
 
@@ -265,7 +264,7 @@ test('an unknown worker type fails the step and blocks the run', async () => {
     { title: 'Mystery', workerType: 'not-installed', input: {} },
   ]);
 
-  await startRun(run.runId, harness.dependencies);
+  await startApproved(run.runId, harness.dependencies);
   const [result] = await harness.processAll();
   assert.equal(result.status, 'failed');
   assert.equal(result.error.code, 'UNKNOWN_WORKER_TYPE');

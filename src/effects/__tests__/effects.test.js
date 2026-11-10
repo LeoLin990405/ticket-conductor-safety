@@ -1169,3 +1169,78 @@ test('enqueueEffect keeps the pending row when the queue push is refused', async
     teardown();
   }
 });
+
+test('setFields stores the previous value and restoreFields writes it back', async () => {
+  const issue = {
+    key: 'PAY-1',
+    fields: { summary: 'Refunds', status: { name: 'To Do' } },
+  };
+  const queue = createFakeQueue();
+  const jira = createFakeJira((path, init) => {
+    const method = init.method ?? 'GET';
+    if (method === 'GET' && !String(path).endsWith('/transitions')) {
+      return jsonResponse(JSON.parse(JSON.stringify(issue)));
+    }
+    if (method === 'PUT') {
+      Object.assign(issue.fields, init.body ? JSON.parse(init.body).fields : {});
+      return jsonResponse({});
+    }
+    return jsonResponse({ errorMessages: ['unexpected'] }, 500);
+  });
+  const { store } = setup({ queue, requestJira: jira.requestJira });
+  try {
+    const { runId, stepId } = await seedStep(store);
+    const { requestKey } = await enqueueEffect({
+      runId,
+      stepId,
+      kind: 'setFields',
+      payload: { issueKey: 'PAY-1', fields: { summary: 'Refunds v2' } },
+      discriminator: 'fields:summary',
+    });
+    const applied = await effectApplierHandler({ body: { requestKey } });
+    assert.equal(applied.status, 'applied');
+    assert.equal(applied.result.before.fields.summary, 'Refunds');
+    assert.equal(issue.fields.summary, 'Refunds v2');
+    const puts = jira.calls.filter((call) => call.method === 'PUT');
+    assert.equal(puts.length, 1);
+    assert.deepEqual(puts[0].body.fields, { summary: 'Refunds v2' });
+
+    issue.fields.summary = 'A person edited this';
+    const { requestKey: driftedKey } = await enqueueEffect({
+      runId,
+      stepId,
+      kind: 'restoreFields',
+      payload: {
+        issueKey: 'PAY-1',
+        fields: { summary: 'Refunds' },
+        wrote: { summary: 'Refunds v2' },
+      },
+      discriminator: 'undo:setFields:drift',
+    });
+    const drifted = await effectApplierHandler({ body: { requestKey: driftedKey } });
+    assert.equal(drifted.status, 'applied');
+    assert.equal(drifted.result.skipped, true);
+    assert.equal(drifted.result.reason, 'field-drift');
+    assert.equal(issue.fields.summary, 'A person edited this');
+    assert.equal(jira.calls.filter((call) => call.method === 'PUT').length, 1);
+
+    issue.fields.summary = 'Refunds v2';
+    const { requestKey: restoreKey } = await enqueueEffect({
+      runId,
+      stepId,
+      kind: 'restoreFields',
+      payload: {
+        issueKey: 'PAY-1',
+        fields: { summary: 'Refunds' },
+        wrote: { summary: 'Refunds v2' },
+      },
+      discriminator: 'undo:setFields:restore',
+    });
+    const restored = await effectApplierHandler({ body: { requestKey: restoreKey } });
+    assert.equal(restored.status, 'applied');
+    assert.equal(restored.result.skipped, undefined);
+    assert.equal(issue.fields.summary, 'Refunds');
+  } finally {
+    teardown();
+  }
+});

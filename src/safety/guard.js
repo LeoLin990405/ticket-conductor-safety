@@ -1,19 +1,11 @@
 /**
- * Server-side guard for irreversible Jira writes.
+ * Blast-radius lines that a confirmation grant is bound to.
  *
- * The Rovo confirmation card is not the gate. `dispatch-run` and `fork-run`
- * refuse to enqueue anything until the caller repeats the blast-radius
- * acknowledgement and the confirmation token this module derives from the
- * card. A string `"true"`, a bare `confirm: true`, or a token for a different
- * card leaves the run in `planning`.
- *
- * The token is a hash of the run, the Epic, the score line, and the request
- * keys of the mutating writes (child issues, transitions, field edits).
- * Comment keys are left out so a citation comment cannot change the token
- * between `plan-split` and dispatch. The hash is not a secret: the model
- * sees it in the tool result. The handler still rejects a call that omits
- * it, and the router prompt forbids the model from copying it until a later
- * user message agrees to the plan that was shown.
+ * The strings in this file are not secrets. `plan-split` returns
+ * `acknowledgement` and the card. It does not return a token. The HMAC
+ * grant, the expiry, and the single-use row live in `safety/grants.js`.
+ * A caller who hashes this card still cannot mint a token: the grant id
+ * and the server secret are not on the card.
  *
  * @module safety/guard
  */
@@ -50,9 +42,9 @@ export function acknowledgementText(card) {
 }
 
 /**
- * Token for one blast-radius card. Same card, same token. A different
- * score, a different Epic, or a different set of mutating request keys
- * produces a different token.
+ * Public digest of one blast-radius card. Same card, same digest. This is
+ * an input to the HMAC grant. It is not a `confirmToken`, and presenting
+ * it to `dispatch-run` is refused.
  *
  * @param {object|null|undefined} card
  * @returns {string} 64 hex characters.
@@ -67,44 +59,6 @@ export function confirmationToken(card) {
     ...keys,
   ];
   return createHash('sha256').update(lines.join('\n')).digest('hex');
-}
-
-/**
- * Decide whether this payload may start the run described by `card`.
- *
- * `confirm` must be the boolean `true`. The string `"true"` is refused.
- * `acknowledgeBlastRadius` must equal {@link acknowledgementText}.
- * `confirmToken` must equal {@link confirmationToken}.
- *
- * @param {object|null|undefined} payload
- * @param {object|null|undefined} card
- * @returns {{ok: true, code: 'CONFIRMED', token: string, acknowledgement: string}|{ok: false, code: string, reason: string}}
- */
-export function evaluateDispatchAuthorization(payload, card) {
-  const acknowledgement = acknowledgementText(card);
-  const token = confirmationToken(card);
-  if (!payload || payload.confirm !== true) {
-    return {
-      ok: false,
-      code: CONFIRMATION_REQUIRED,
-      reason: 'confirm must be the boolean true',
-    };
-  }
-  if (payload.acknowledgeBlastRadius !== acknowledgement) {
-    return {
-      ok: false,
-      code: CONFIRMATION_REQUIRED,
-      reason: 'acknowledgeBlastRadius must match the blast-radius card',
-    };
-  }
-  if (typeof payload.confirmToken !== 'string' || payload.confirmToken !== token) {
-    return {
-      ok: false,
-      code: CONFIRMATION_REQUIRED,
-      reason: 'confirmToken does not match this blast radius',
-    };
-  }
-  return { ok: true, code: 'CONFIRMED', token, acknowledgement };
 }
 
 /**
@@ -133,48 +87,15 @@ export function forkConfirmationToken(runId, stepIdx, input) {
 }
 
 /**
- * @param {object|null|undefined} payload
- * @returns {{ok: true, code: 'CONFIRMED'}|{ok: false, code: string, reason: string}}
- */
-export function evaluateForkAuthorization(payload) {
-  const runId = typeof payload?.runId === 'string' ? payload.runId.trim() : '';
-  const stepIdx = payload?.stepIdx;
-  const acknowledgement = forkAcknowledgement(runId, stepIdx);
-  const token = forkConfirmationToken(runId, stepIdx, payload?.input);
-  if (!payload || payload.confirm !== true) {
-    return {
-      ok: false,
-      code: CONFIRMATION_REQUIRED,
-      reason: 'confirm must be the boolean true',
-    };
-  }
-  if (payload.acknowledgeBlastRadius !== acknowledgement) {
-    return {
-      ok: false,
-      code: CONFIRMATION_REQUIRED,
-      reason: 'acknowledgeBlastRadius must match the fork card',
-    };
-  }
-  if (typeof payload.confirmToken !== 'string' || payload.confirmToken !== token) {
-    return {
-      ok: false,
-      code: CONFIRMATION_REQUIRED,
-      reason: 'confirmToken does not match this fork',
-    };
-  }
-  return { ok: true, code: 'CONFIRMED' };
-}
-
-/**
- * Fields a caller copies from a `plan-split` result onto `dispatch-run`.
+ * What an agent-facing result may carry. The acknowledgement is the line
+ * the person reads. The token is not here.
  *
  * @param {object|null|undefined} card
- * @returns {{acknowledgement: string, confirmToken: string}}
+ * @returns {{acknowledgement: string}}
  */
 export function confirmationFields(card) {
   return {
     acknowledgement: acknowledgementText(card),
-    confirmToken: confirmationToken(card),
   };
 }
 
