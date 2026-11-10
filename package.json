@@ -6,6 +6,9 @@
   "type": "module",
   "license": "MIT",
   "private": true,
+  "engines": {
+    "node": "22.23.4"
+  },
   "dependencies": {
     "@forge/api": "8.4.0",
     "@forge/bridge": "7.2.1",
@@ -20,7 +23,9 @@
     "test": "node --test",
     "test:simulation": "node --test --test-reporter=spec tests/simulation/*.test.mjs",
     "test:headroom": "node --test --test-reporter=spec tests/simulation/scenarios.test.mjs",
-    "safety-eval": "node scripts/safety-eval.mjs"
+    "safety-eval": "node scripts/safety-eval.mjs",
+    "demo:offline": "node scripts/demo-offline.mjs",
+    "offline": "npm run safety-eval && npm run demo:offline"
   },
   "overrides": {
     "glob": "14.0.4",

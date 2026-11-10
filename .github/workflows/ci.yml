@@ -28,6 +28,8 @@ jobs:
         run: npm run test:simulation
       - name: irreversible-action guard
         run: npm run safety-eval
+      - name: offline naive-agent demo
+        run: npm run demo:offline
       - name: forge lint
         env:
           FORGE_EMAIL: ${{ secrets.FORGE_EMAIL }}

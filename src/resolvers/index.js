@@ -20,7 +20,7 @@ import {
 import { dispatchRun, forkRun } from '../actions/index.js';
 import { lessonOp } from '../memory/lessons.js';
 import { replayRun } from '../recorder/replay.js';
-import { approveFromPanel, issueForkGrant } from '../safety/grants.js';
+import { approveFromPanel, issueForkGrant, shareGrant } from '../safety/grants.js';
 import { issueKeyFrom, exportRunTrace, loadRun, loadRunsForIssue } from './panelData.js';
 import { pushWithRetry } from '../platform/queuePushRetry.js';
 
@@ -154,6 +154,10 @@ resolver.define('forkRun', async (request) => {
       now: () => Date.now(),
       principal: accountId,
     });
+    const shared = await shareGrant(getStore(), runId, issued);
+    if (!shared.ok) {
+      return { ok: false, code: 'CONFIRMATION_REQUIRED', error: shared.reason };
+    }
     /** @type {Record<string, unknown>} */
     const payload = {
       runId,

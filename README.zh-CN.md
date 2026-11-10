@@ -102,19 +102,47 @@ applier，`worker/` 是 step worker 与各 `workerType` 处理函数，`watchdog
 设计理由见 [`docs/DESIGN.md`](docs/DESIGN.md)；与 super-agent 设计的对照见
 [`docs/superagent-architecture.md`](docs/superagent-architecture.md)。
 
+## 🛡️ 安全
+
+不可逆动作是应用无法干净撤回的 Jira 写入：创建工单、流转状态、修改标量字段。清单里没有删除工单的 scope。撤销会把子工单转到 Done 并打上 `conductor-rolled-back` 标签；状态只在工单仍停在本次运行留下的状态时才写回；字段只在仍等于本次写入的值时才写回。
+
+模型只有七个 action，自己不能写 Jira。`plan-split` 把 run 存为 `planning`，并且不返回 token。Run 面板签发一次性 HMAC，把已用授权写到 `run.grants`，并在同一次调用里消费它。`startRun` 在每条路径上检查授权。含糊的目标、缺少 Epic 或步骤、畸形参数、伪造、过期或重放的授权，以及存储写入失败，都会在调用 Jira 之前停下。超时或写到一半的 effect 会失败关闭，后续投递不会再次调用 Jira。预算耗尽会排空队列里尚未发出的正向 effect。
+
+在本工作区的 Node v22.23.4 上：
+
+| 命令 | 结果 |
+|---|---|
+| `npm test` | 366 通过，1 跳过，0 失败 |
+| `npm run safety-eval` | 37 通过，0 失败 |
+| `npm run demo:offline` | 基线 6 次不可逆 mock Jira 写入，开启防护后 0 次（6 次里 6 次被拦住） |
+| `npm audit` | 0 个漏洞 |
+
+这 37 行里有 18 行失败状态矩阵。[`docs/failure-matrix.md`](docs/failure-matrix.md) 把每一类映射到场景 id。[`docs/evidence/safety-eval.json`](docs/evidence/safety-eval.json) 是同一条命令写出的机器可读结果。基线是一个对着原始 mock Jira 的脚本化 agent，不是在线模型。[`docs/threat-model.md`](docs/threat-model.md) 写了资产、参与者、模型 / 面板 / 服务器边界，以及与 Google SAIF 的简短对照。
+
+mock 是本仓库的 REST 模型。超时会使 effect 行失败，但不会取消已经发出的 HTTP 调用。面板上的账号 id 来自 Forge resolver 上下文，没有第二因素。完整限制见 [`docs/drawerrr-submission.md`](docs/drawerrr-submission.md)。
+
+> 这是 Codegeist 2026 项目的公开快照。上表数字来自内存 store 和内存 Jira 客户端。本仓库没有对真实 Jira 站点或真实模型跑过这些检查。
+
 ## 🚀 快速开始
 
-**要求：** Node 22.23.x（CI 固定 22.23.4）、Forge CLI 14.2.0，以及一个启用了 Rovo 的 Jira Cloud
-站点（只有要真正跑起来时才需要）。不使用 Forge SQL，也不声明任何外部 egress。
+**离线，不需要 Forge 账号。** Node 固定为 22.23.4（`.nvmrc`、CI 和 `package.json` 的 `engines`）。
 
 ```sh
 git clone https://github.com/LeoLin990405/ticket-conductor-safety.git
 cd ticket-conductor-safety
-npm ci
+npm ci && npm run safety-eval && npm run demo:offline
+npm test
+npm audit
+```
+
+`docker build -t ticket-conductor-safety .` 然后 `docker run --rm ticket-conductor-safety` 会跑同样的 safety eval 和离线 demo。`.devcontainer/devcontainer.json` 使用这个 Dockerfile。
+
+要在 development 站点上真的跑起来，还需要 Forge CLI 14.2.0 和一个启用了 Rovo 的 Jira Cloud 站点。不使用 Forge SQL，也不声明任何外部 egress。
+
+```sh
 export FORGE_EMAIL='<你的 Atlassian 账号邮箱>'
 export FORGE_API_TOKEN='<来自 id.atlassian.com/manage-profile/security/api-tokens 的 token>'
 npm run lint     # = forge lint
-npm test         # = node --test
 ```
 
 部署到 development 环境并安装到站点：

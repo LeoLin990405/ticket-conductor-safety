@@ -613,34 +613,41 @@ export async function applyJiraEffect(effect, options) {
 
   if (effect.kind === 'closeIssue') {
     const payload = validateCloseIssuePayload(effect.payload);
-    // Transition, then label. A failed label call retries the whole effect.
-    // A retry may transition again; the request key still applies this row
-    // at most once once the row is `applied`. There is no DELETE.
+    // Transition, then label. There is no DELETE. If the transition is
+    // accepted and a later call throws, the error is marked partial so the
+    // applier fails the row instead of transitioning again.
     const moved = await transitionIssue(
       requestJira,
       payload.issueKey,
       payload.toStatusName,
       effect.kind,
     );
-    const issue = await readIssue(requestJira, payload.issueKey, effect.kind);
-    const labels = labelsOf(issue);
-    if (!labels.includes(payload.label)) {
-      labels.push(payload.label);
+    try {
+      const issue = await readIssue(requestJira, payload.issueKey, effect.kind);
+      const labels = labelsOf(issue);
+      if (!labels.includes(payload.label)) {
+        labels.push(payload.label);
+      }
+      const response = await requestJira(issuePath(payload.issueKey), {
+        method: 'PUT',
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ fields: { labels } }),
+      });
+      await assertJiraOk(response, 'label rolled-back issue', effect.kind);
+      return {
+        transitionId: moved.transitionId,
+        issueKey: payload.issueKey,
+        label: payload.label,
+      };
+    } catch (error) {
+      if (error && typeof error === 'object') {
+        error.partial = true;
+      }
+      throw error;
     }
-    const response = await requestJira(issuePath(payload.issueKey), {
-      method: 'PUT',
-      headers: {
-        Accept: 'application/json',
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ fields: { labels } }),
-    });
-    await assertJiraOk(response, 'label rolled-back issue', effect.kind);
-    return {
-      transitionId: moved.transitionId,
-      issueKey: payload.issueKey,
-      label: payload.label,
-    };
   }
 
   if (effect.kind === 'recordRemovedComment') {

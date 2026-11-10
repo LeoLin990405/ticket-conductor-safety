@@ -51,8 +51,9 @@ import {
   publicStatusStep,
 } from './contract.js';
 import { planCardFromSteps, previewBlastRadius } from '../blast/preview.js';
+import { assessGoal } from '../safety/goal.js';
 import { confirmationFields } from '../safety/guard.js';
-import { authorizeFork } from '../safety/grants.js';
+import { authorizeForkShared } from '../safety/grants.js';
 import { applyBlastGate } from '../run/approval.js';
 import { readRunBudget } from '../run/budget.js';
 import {
@@ -64,6 +65,9 @@ import {
 
 /** Plans stay small enough for one chat confirmation. @constant {number} */
 export const MAX_PLAN_STEPS = 8;
+
+/** `stepsJson` above this length is refused before a run is stored. @constant {number} */
+export const MAX_PLAN_JSON_CHARS = 24_000;
 
 /**
  * @param {unknown} error
@@ -160,6 +164,9 @@ function projectKeyFrom(payload) {
  * @returns {Array<{title: string, workerType: string, input: any, dependsOn: number[]}>}
  */
 export function parsePlanSteps(raw) {
+  if (typeof raw === 'string' && raw.length > MAX_PLAN_JSON_CHARS) {
+    throw new StoreValidationError('stepsJson is too large');
+  }
   let steps = raw;
   if (typeof raw === 'string') {
     try {
@@ -237,6 +244,10 @@ export async function planSplit(payload, context, overrides) {
     fallback: jiraContext(source).issueKey,
   });
   const goal = readString(source, 'goal');
+  const goalCheck = assessGoal(goal);
+  if (!goalCheck.ok) {
+    throw new StoreValidationError(goalCheck.reason);
+  }
   const projectKey = projectKeyFrom({ ...source, epicKey });
   const parsed = parsePlanSteps(
     source.steps !== undefined ? source.steps : source.stepsJson,
@@ -563,9 +574,10 @@ export async function replayRun(payload, _context, overrides) {
 export async function forkRun(payload, context, overrides) {
   const source = payload && typeof payload === 'object' ? payload : {};
   const runId = readString(source, 'runId');
-  const forkDecision = authorizeFork(
+  const forkDecision = await authorizeForkShared(
     source,
     typeof overrides?.now === 'function' ? overrides.now() : Date.now(),
+    overrides?.store,
   );
   if (!forkDecision.ok) {
     return {

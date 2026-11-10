@@ -51,7 +51,7 @@ import { workSteps } from './digest.js';
 import { planCardFromSteps, previewBlastRadius } from '../blast/preview.js';
 import { isApprovalGate, stepIdsBlockedByOpenApproval } from './approval.js';
 import { applyBudgetStop, applyRunBudget, commitRunBudget, runBudgetStop } from './budget.js';
-import { authorizeDispatch } from '../safety/grants.js';
+import { authorizeDispatchShared } from '../safety/grants.js';
 
 /**
  * Statuses after which a run must not change again in WP3.
@@ -383,7 +383,13 @@ export async function startRun(runId, overrides) {
     // Every caller, including fork and the unit harness, presents a grant.
     // A missing or reused token returns the planning run and enqueues
     // nothing. The card is on the return value only.
-    const decision = authorizeDispatch(confirmation, blastRadius, dependencies.now());
+    const decision = await authorizeDispatchShared(
+      confirmation,
+      blastRadius,
+      dependencies.now(),
+      dependencies.store,
+      run,
+    );
     if (!decision.ok) {
       return { ...run, blastRadius, refusedConfirmation: decision };
     }

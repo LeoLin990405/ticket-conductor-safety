@@ -273,6 +273,62 @@ function validateRunRecord(record) {
   if (record.budget !== undefined) {
     validateRunBudget(record.budget);
   }
+  // Optional. Absent until a panel grant is shared. A normal run omits it.
+  if (record.grants !== undefined) {
+    validateRunGrants(record.grants);
+  }
+}
+
+/**
+ * Used-grant rows on `run.grants`. The token itself is not stored.
+ * One object, capped at 16 entries, so a replay can be seen from any
+ * instance that reads this run.
+ *
+ * @param {unknown} value
+ * @returns {void}
+ */
+function validateRunGrants(value) {
+  const grants = assertPlainObject(value, 'run.grants');
+  const ids = Object.keys(grants);
+  if (ids.length > 16) {
+    throw new StoreValidationError('run.grants exceeds 16 entries');
+  }
+  const allowed = new Set([
+    'kind',
+    'binding',
+    'acknowledgement',
+    'expiresAt',
+    'used',
+    'principal',
+  ]);
+  for (const id of ids) {
+    if (!/^[0-9a-f]{32}$/.test(id)) {
+      throw new StoreValidationError('run.grants key must be a grant id');
+    }
+    const row = assertPlainObject(grants[id], `run.grants.${id}`);
+    for (const key of Object.keys(row)) {
+      if (!allowed.has(key)) {
+        throw new StoreValidationError(`run.grants.${id}.${key} is not a grant field`);
+      }
+    }
+    assertEnum(row.kind, `run.grants.${id}.kind`, ['dispatch', 'fork']);
+    const binding = assertString(row.binding, `run.grants.${id}.binding`);
+    if (binding.length > 8_000) {
+      throw new StoreValidationError(`run.grants.${id}.binding is too long`);
+    }
+    const acknowledgement = assertString(row.acknowledgement, `run.grants.${id}.acknowledgement`);
+    if (acknowledgement.length > 500) {
+      throw new StoreValidationError(`run.grants.${id}.acknowledgement is too long`);
+    }
+    assertNumber(row.expiresAt, `run.grants.${id}.expiresAt`);
+    if (typeof row.used !== 'boolean') {
+      throw new StoreValidationError(`run.grants.${id}.used must be a boolean`);
+    }
+    const principal = assertString(row.principal, `run.grants.${id}.principal`, { allowEmpty: true });
+    if (principal.length > 128) {
+      throw new StoreValidationError(`run.grants.${id}.principal is too long`);
+    }
+  }
 }
 
 /**

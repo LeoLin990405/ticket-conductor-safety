@@ -162,6 +162,7 @@ const ENTITIES = Object.freeze({
       reviewedThroughWave: 'integer',
       ledger: 'any',
       budget: 'any',
+      grants: 'any',
     },
     [
       index('by-epic', ['epicKey'], ['createdAt']),

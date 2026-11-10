@@ -1,47 +1,64 @@
-# Ticket Conductor: gated, deduplicated and undoable Jira writes for an AI agent
+# Ticket Conductor: stop an agent from writing Jira until a person confirms the exact change
 
-## 1. Project overview
+## The irreversible action
 
-Ticket Conductor is an Atlassian Forge app for Jira Cloud, built for the Codegeist 2026 hackathon. A user asks a Rovo agent to turn an Epic into a plan of up to 8 steps. The app runs that plan as parallel workers. Each step becomes a Jira child issue and may get comments, transitions, or scalar field edits.
+The action this entry guards is a Jira write the app cannot take back cleanly. One run can create child issues, transition issues, and set scalar fields. The manifest has `write:jira-work` and no delete-issue scope, so a created issue stays. Undo closes it and adds the label `conductor-rolled-back`. A transition is undone only while the issue is still in the status the run left. A field edit is undone only while the issue still holds the values the run wrote. A retry that calls Jira again can duplicate any of those writes. Comments are the exception: undo deletes the comment, and the acknowledgement line does not count them.
 
-The irreversible-action risk is concrete. One run can create many tickets, post comments, move issues, and edit fields, and a retry can repeat any of it. This entry is how those writes stay bounded, reviewable, and undoable. It is a small design, not a general agent-safety solution.
+The app is an Atlassian Forge app for Jira Cloud. A person asks a Rovo agent to turn an Epic into a plan of at most eight steps. The agent does not write Jira. The effect applier does, after a human grant. Everything reported below ran on Node v22.23.4 against the in-memory store and the in-memory Jira client. No live Jira site and no live model were called.
 
-Everything below is tested **in simulation only**. The model call is off (`CONDUCTOR_LLM=off`) unless a scenario passes a scripted model. No live Jira site and no live Rovo agent are required.
+## Safeguard stack
 
-## 2. Safety approach
+The stack is identity, authorization, human approval, a preview, and a fail-safe.
 
-1. **The agent cannot write to Jira.** `conductor-router` has seven app actions. `plan-split` stores a run as `planning` and does not call Jira. Only the effect applier writes (`src/effects/applier.js`). There is no delete-issue scope. Scopes are `read:jira-work`, `write:jira-work`, `storage:app`, and `search:confluence`.
-2. **Every write is one deduplicated effect.** The key is `sha256(runId|stepId|kind|discriminator)`. The attempt number is not in it (`src/effects/requestKey.js`). An `applied` or `failed` row never reaches Jira again.
-3. **Blast-radius preview.** `previewBlastRadius` lists the writes, with request keys, and scores them (child issue 1, transition or field edit 4). `plan-split` and `get-run-status` return the card before dispatch.
-4. **The token is not in the tool result.** `plan-split`, `get-run-status`, and `handoffGoal` return the acknowledgement line and do not return `confirmToken`. The public sha256 of the card is rejected. The Run panel reads the Forge account id from the resolver context. `approveFromPanel` (`src/safety/grants.js`) mints `v2.<id>.<hmac>` with HMAC-SHA256 under `CONDUCTOR_CONFIRM_SECRET`, or a random process key when that is unset. The grant lasts 15 minutes, the first success uses it, and the panel response does not include it. `startRun` always calls `authorizeDispatch`. The string `"true"` is refused. `handoffGoal` does not dispatch. `fork-run` has its own HMAC; `src/recorder/fork.js` then mints the new run's dispatch grant and does not return it. The dev webtrigger does the same only with `DEV_WEBTRIGGER_SECRET` and `approve: true`, and it does not echo the token. The router prompt says the model will not receive `confirmToken`.
-5. **A risky plan grows an approval gate before the gated children exist.** Score 5 or more, or a transition or field edit of an issue the step did not create, appends an `approval` step. Those dependents get no child issue until a person moves the gate's child to Done. Other siblings still run.
-6. **Undo includes field edits.** `closeIssue` moves a child to Done and labels it `conductor-rolled-back`. It never deletes the issue. `recordRemovedComment` deletes a comment. `restoreStatus` writes only while the issue is still in the status the run left. `setFields` stores the previous scalar values on `result.before` and PUTs only those fields. `restoreFields` writes them back when the issue still holds what the run wrote. A second Undo hits the same keys. The only DELETE in `src/effects/jira.js` is the comment delete.
-7. **A budget stop drains queued forward work.** Caps are `maxSteps` 8, `maxModelCalls` 28, and `wallClockMs` of 8 × 12 minutes. `startRun`, the step worker, and `spawnWave` check `runBudgetStop` before the next enqueue or model call. A stop sets the run to `blocked` and fails pending and retrying `createIssue`, `comment`, `transition`, and `setFields` rows. The applier also refuses a forward effect once that run is noted, so a message still on the queue does not call Jira. Undo effects are not cancelled. `completeText` does not call `chat` once `usedModelCalls` is 28. Equal to the wall-clock or step cap is still inside.
-8. **Plans and faults stay bounded.** `plan-split` rejects more than 8 steps, unknown worker types, and cycles, and stores nothing. Waves stop at 3. A step gets 3 attempts. Ticket text is fenced as `<untrusted>` and cannot add effects. Chaos faults are closed in `production` and `staging`.
+**Identity.** `conductor-router` has seven actions. Create, transition, and field edit are not among them. `plan-split` stores a run as `planning`. Only `dispatch-run` and `fork-run` can enqueue Jira work, and both check a grant first. The development webtrigger answers 403 unless `x-dev-secret` matches `DEV_WEBTRIGGER_SECRET`. The Run panel reads the Forge account id from the resolver context. An account id in the payload is ignored (`FS-UNAUTHORIZED`).
 
-## 3. Supporting evidence
+**Authorization and approval.** `plan-split`, `get-run-status`, and `handoffGoal` return the acknowledgement line (the blast-radius score and the issue, transition, and field counts) and do not return `confirmToken`. `startRun` calls `authorizeDispatchShared` on every path. `confirm` must be the boolean `true`. The string `"true"`, a missing token, and the public sha256 of the card are refused. The panel mints `v2.<id>.<hmac>` with HMAC-SHA256 under `CONDUCTOR_CONFIRM_SECRET`, or a random process key when that is unset. The grant lasts 15 minutes. `shareGrant` writes the row onto `run.grants`. The token is not stored. The first success compare-and-sets `used`, on the same `updatedAt` condition the status update uses. A second instance with an empty memory map sees that row (`FS-INSTANCE`). A forged mac leaves the row unused (`FS-FORGED`). An expired grant and a grant for a different run are refused (`FS-EXPIRED`, `FS-CROSS-RUN`). A thrown store write refuses the start (`FS-STORE-DOWN`). The panel response omits the token, and the panel payload strips `grants`.
 
-On Node 22.23.4, `npm ci && npm test` gives **365 pass, 1 skipped, 0 fail**. `npm audit` reports **0 vulnerabilities** (`overrides` pin `glob` 14.0.4, `minimatch` 11.0.5, and `prosemirror-view` 1.42.9). `npm run safety-eval` prints **19 pass, 0 fail**. `npm run test:headroom` runs the 31 simulation scenarios, including the KVS headroom report, with no warning on this run. The handlers run against in-memory fakes. `npm run safety-eval` is also a CI step. `forge lint` is skipped there when `FORGE_API_TOKEN` is unset, so this run did not lint the manifest.
+**Preview and fail-safe.** `previewBlastRadius` lists the writes before dispatch. Caps are 8 work steps, 28 model calls, and a wall clock of 8 times 12 minutes. A blown budget sets the run to `blocked`, fails pending forward effects, and the applier refuses a forward effect for a noted run. Undo effects stay queued. A vague goal or a missing epic, goal, or step list stores nothing (`FS-AMBIGUOUS`, `FS-MISSING`). Broken JSON, a payload over 24,000 characters, a numeric `workerType`, and a non-object `setFields` value are rejected before Jira (`FS-MALFORMED`, `FS-OVERSIZED`, `FS-TYPE`). A string `dependsOn`, a newline in the worker type, and a null in the goal are rejected (`FS-EDGE`). Ticket text is fenced as `<untrusted>`, and a closing tag in a summary or comment is stripped. A scripted model that returns `createIssue`, `transition`, `setFields`, and `dispatch-run` still yields one comment (`FS-INJECT-ISSUE`). A call past its deadline fails the row (`FS-TIMEOUT`). A second delivery while the row is `applying` does not call Jira (`FS-INFLIGHT`). A close that transitions and then fails the label write is marked partial and is not transitioned again (`FS-PARTIAL`).
 
-`src/safety/eval.js` (asserted again by `src/safety/__tests__/guard.test.js`) refuses a missing confirm, the string `"true"`, a bad acknowledgement, another card's token, and the public digest. It checks that the panel grant is single-use and expires, that `startRun` without a grant enqueues nothing, that the panel starts a run without returning the token, that a budget stop keeps a pending create and a later comment off Jira, and that `setFields` records the old summary. `src/effects/__tests__/effects.test.js` checks that `restoreFields` skips a summary a person changed.
+## Evidence
 
-## 4. Limitations
+These numbers are from this workspace on Node v22.23.4. `npm audit` reports 0 vulnerabilities.
 
-- **Simulation only.** The fake Jira is this repo's REST model. The prompt checks do not chat with a model, and `tests/scenarios/06-adversarial-tries.md` is still not executed live.
-- **Grants are process-local.** The panel consumes the token in one invocation, so the tool result never has it. Another instance has no row. `CONDUCTOR_CONFIRM_SECRET` shares the HMAC key and does not share the used-token table. The handler cannot tell whether the panel click and the chat are the same person. It does require an account id on the resolver context.
-- **Two callers sit outside the tool list.** `src/recorder/fork.js` mints the new run's dispatch grant only after the fork action has checked the fork HMAC, and it does not return that grant. The dev webtrigger can approve with `DEV_WEBTRIGGER_SECRET` and `approve: true`. That secret is not set in production, and the response has no token.
-- **Undo is still partial.** The gate's own child is created so a person can transition it. Close assumes a status named `Done`. Closed children stay, labelled `conductor-rolled-back`. Memory rows and flight-recorder events stay. `setFields` is scalars only, and a field edit on a child this run created is covered by closing that child. An effect already in `applying` may finish its Jira call. `commitRunBudget` only records; the next stop drains forward effects and leaves compensations so undo can still run.
-- **Dependency overrides.** `glob` 14.0.4, `minimatch` 11.0.5, and `prosemirror-view` 1.42.9 are forced because they sit under `@forge/*`. `npm audit` is clean on this lockfile. A later Forge release may carry the patches without the override.
+| Command | Result |
+|---|---|
+| `npm test` | 366 pass, 1 skipped, 0 fail |
+| `npm run safety-eval` | 37 pass, 0 fail |
+| `npm run demo:offline` | baseline 6 irreversible writes, guarded 0, 6 of 6 blocked |
+| `npm audit` | 0 vulnerabilities |
 
-## 5. How to reproduce
+Eighteen of those rows are the failure matrix, all PASS. `docs/failure-matrix.md` maps each class to the scenario id, the expected behavior, and the observed PASS. `docs/evidence/safety-eval.json` is the machine-readable record from the same command.
+
+The baseline is a scripted agent with a raw mock Jira client and no validator. It creates an issue, transitions `PAY-1`, sets a summary, creates another issue because a ticket comment said to, creates the first issue again with no idempotency key, and PUTs a type-confused field list. That is 6 mutating responses. The guarded run uses the same six intents through `plan-split`, `dispatch-run`, and the effect validator, with no human grant. The write counter on that Jira client stays 0. Codes: `CONFIRMATION_REQUIRED`, `VALIDATION`, and `EFFECT_VALIDATION`.
+
+The challenge cites a study in which frontier agents continued in 40.5% of cases where harm was possible. This repository does not remeasure that study. The 6 and the 0 are the scripted harness. `SAFETY_LIVE_LLM=1` prints a line and does not call a model.
+
+Screenshots of the two commands are `docs/media/safety-eval.svg` and `docs/media/demo-offline.svg`. The full terminal text is the matching `.txt` files.
+
+## Reproduce
+
+Node is pinned to 22.23.4 in `.nvmrc`, `.node-version`, `package.json` `engines`, and CI. A Forge or Atlassian account is not required.
 
 ```sh
-git clone https://github.com/LeoLin990405/ticket-conductor-safety.git && cd ticket-conductor-safety
-npm ci                 # Node 22.23.x
-npm test               # unit + simulation; no Jira or secrets needed
-npm run test:headroom  # tests/simulation/scenarios.test.mjs
-npm run safety-eval    # pass/fail table of the irreversible-action checks
-npm audit              # 0 vulnerabilities on this lockfile
+git clone https://github.com/LeoLin990405/ticket-conductor-safety.git
+cd ticket-conductor-safety
+npm ci && npm run safety-eval && npm run demo:offline
 ```
 
-Start with `docs/blast-radius.md`, `src/safety/grants.js`, `docs/freeze.md`, and `tests/simulation/scenarios.test.mjs`.
+`npm test` and `npm audit` use the same install. CI runs the unit tests, the simulation scenarios, `npm run safety-eval`, and `npm run demo:offline`. A container build is `docker build -t ticket-conductor-safety .` then `docker run --rm ticket-conductor-safety`, which runs the same two commands. `.devcontainer/devcontainer.json` points at that Dockerfile.
+
+The threat model, with assets, actors, the model/panel/server boundary, and a short SAIF map, is `docs/threat-model.md`.
+
+## Limitations
+
+The Jira client is this repository's REST model. A live workflow can reject a transition the mock accepts, or accept a write the mock never sees.
+
+`FS-TIMEOUT` fails the effect row and leaves the HTTP call running. A request Jira has already accepted can still land. A later delivery sees `failed` and does not call Jira again. `FS-PARTIAL` is that case in miniature: one transition is posted, the label write throws, and the transition is not repeated. The issue can sit in Done without the rollback label until a person runs undo.
+
+The used-grant compare-and-set is the run's `updatedAt`. A thrown write refuses the grant. Grants minted inside one process for unit tests and the simulator are enforced in that process and do not write `run.grants`. The panel path always shares.
+
+The account id is the Forge resolver context. There is no second factor, and the app does not prove the panel click and the typed goal belong to the same person.
+
+Undo leaves the issue in place, labelled `conductor-rolled-back`. Memory rows and flight-recorder events stay. A budget stop drains forward effects that are still pending. An effect already `applied` stays applied. `setFields` is scalars only.
+
+`glob` 14.0.4, `minimatch` 11.0.5, and `prosemirror-view` 1.42.9 are forced with `overrides` because they sit under `@forge/*`. `npm audit` is clean on this lockfile.
