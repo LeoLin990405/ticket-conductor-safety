@@ -5,6 +5,7 @@ import test from 'node:test';
 
 import { createMemoryStore, resetStore, setStore } from '../../store/index.js';
 import { resetWorkerTypes } from '../../worker/index.js';
+import { dispatchRun } from '../index.js';
 import { handoffGoal } from '../handoff.js';
 
 const repoRoot = fileURLToPath(new URL('../../../', import.meta.url));
@@ -18,12 +19,51 @@ function installStore() {
 function queueStubs(store) {
   return {
     store,
+    now: () => 1_700_000_000_000,
     enqueueEffect: async () => ({ requestKey: 'k', created: true }),
     enqueueStep: async () => ({ jobId: 'job' }),
   };
 }
 
-test('handoffGoal recalls, plans, dispatches, and reads status', async () => {
+test('handoffGoal does not dispatch until the caller echoes the token', async () => {
+  const store = installStore();
+  try {
+    const waiting = await handoffGoal({
+      epicKey: 'PAY-1',
+      projectKey: 'PAY',
+      goal: 'Ship payment refunds ledger',
+      stepsJson: JSON.stringify([
+        { title: 'Find related issues', workerType: 'research', input: 'refunds' },
+      ]),
+    }, { principal: { accountId: 'other-agent' } }, queueStubs(store));
+    assert.equal(waiting.ok, true);
+    assert.equal(waiting.awaitingConfirmation, true);
+    assert.equal(waiting.status, 'planning');
+    assert.deepEqual(waiting.calls.map((call) => call.tool), ['recall-memory', 'plan-split']);
+    assert.equal((await store.getRun(waiting.runId)).status, 'planning');
+
+    const again = await handoffGoal({
+      epicKey: 'PAY-1',
+      projectKey: 'PAY',
+      goal: 'Ship payment refunds ledger',
+      stepsJson: JSON.stringify([
+        { title: 'Find related issues', workerType: 'research', input: 'refunds' },
+      ]),
+      confirm: true,
+      acknowledgeBlastRadius: waiting.acknowledgement,
+      confirmToken: waiting.confirmToken,
+    }, { principal: { accountId: 'other-agent' } }, queueStubs(store));
+    assert.equal(again.awaitingConfirmation, true);
+    assert.notEqual(again.runId, waiting.runId);
+    assert.equal((await store.getRun(waiting.runId)).status, 'planning');
+    assert.equal((await store.getRun(again.runId)).status, 'planning');
+  } finally {
+    resetStore();
+    resetWorkerTypes();
+  }
+});
+
+test('handoffGoal recalls, plans, dispatches, and reads status when the token matches', async () => {
   const store = installStore();
   try {
     await store.addMemory({
@@ -32,7 +72,7 @@ test('handoffGoal recalls, plans, dispatches, and reads status', async () => {
       text: 'Refunds stay on the ledger',
       sourceIssue: 'PAY-9',
     });
-    const result = await handoffGoal({
+    const planned = await handoffGoal({
       epicKey: 'PAY-1',
       projectKey: 'PAY',
       goal: 'Ship payment refunds ledger',
@@ -40,22 +80,20 @@ test('handoffGoal recalls, plans, dispatches, and reads status', async () => {
         { title: 'Find related issues', workerType: 'research', input: 'refunds' },
       ]),
     }, { principal: { accountId: 'other-agent' } }, queueStubs(store));
+    assert.equal(planned.awaitingConfirmation, true);
+    assert.equal(planned.calls[0].result.memories[0].memType, 'decision');
+    assert.equal(planned.calls[0].result.memories[0].sourceIssue, 'PAY-9');
+    const result = await dispatchRun({
+      runId: planned.runId,
+      confirm: true,
+      acknowledgeBlastRadius: planned.acknowledgement,
+      confirmToken: planned.confirmToken,
+    }, { principal: { accountId: 'other-agent' } }, queueStubs(store));
 
     assert.equal(result.ok, true);
     assert.equal(result.status, 'running');
-    assert.deepEqual(
-      result.calls.map((call) => call.tool),
-      ['recall-memory', 'plan-split', 'dispatch-run', 'get-run-status'],
-    );
-    assert.equal(result.calls[0].result.memories[0].memType, 'decision');
-    assert.equal(result.calls[0].result.memories[0].sourceIssue, 'PAY-9');
-    assert.equal(result.calls[1].result.ok, true);
-    assert.equal(result.calls[1].result.status, 'planning');
-    assert.equal(result.run.createdBy, undefined);
-    assert.equal(result.steps[0].childIssueKey, null);
-    assert.equal(result.steps[0].workerType, 'research');
-    assert.equal(result.steps[0].attempt, 0);
-    const stored = await store.getRun(result.runId);
+    assert.deepEqual(planned.calls.map((call) => call.tool), ['recall-memory', 'plan-split']);
+    const stored = await store.getRun(planned.runId);
     assert.equal(stored.createdBy, 'other-agent');
     assert.equal(stored.status, 'running');
   } finally {
@@ -94,6 +132,7 @@ test('the local MCP client script hands off a goal and prints status', () => {
     'PAY',
     '--goal',
     'Ship payment refunds',
+    '--confirm',
   ], {
     cwd: repoRoot,
     encoding: 'utf8',

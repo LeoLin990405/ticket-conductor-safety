@@ -26,6 +26,8 @@ jobs:
           node --test --test-reporter=spec "${files[@]}"
       - name: simulation scenarios
         run: npm run test:simulation
+      - name: irreversible-action guard
+        run: npm run safety-eval
       - name: forge lint
         env:
           FORGE_EMAIL: ${{ secrets.FORGE_EMAIL }}

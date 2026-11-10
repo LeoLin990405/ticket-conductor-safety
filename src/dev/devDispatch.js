@@ -4,17 +4,18 @@
  * Guarded by the `DEV_WEBTRIGGER_SECRET` environment variable, which is set
  * only in the development environment (`forge variables set -e development`).
  * Without it, or with a wrong `x-dev-secret` header, it answers 403.
- * Body: {"runId": "..."} → startRun, then returns the run and its steps.
- * Body: {"plan": {epicKey, goal, stepsJson}} → planSplit first, then dispatch.
+ * Body: {"runId", "confirm": true, "acknowledgeBlastRadius", "confirmToken"}
+ * starts the run. A missing token answers 409 and does not enqueue.
+ * Body: {"plan": {epicKey, goal, stepsJson}} plans only until those three
+ * confirmation fields are also present.
  * Add "statusOnly": true to only read the run.
  * Body: {"injectFault": {"type": "kill-worker"|"duplicate-effect"|"jira-429"}}
  * arms one chaos fault and returns. It does not plan or dispatch. The secret
  * is not enough: the simulation or development fault flag must also be set,
  * and production or staging (`CONDUCTOR_APP_ENV`) is refused.
  */
-import { planSplit } from '../actions/index.js';
+import { dispatchRun, forkRun, planSplit } from '../actions/index.js';
 import { injectFault } from '../chaos/faults.js';
-import { startRun } from '../run/stateMachine.js';
 import { getRun, listSteps } from '../store/index.js';
 
 function reply(statusCode, body) {
@@ -69,8 +70,11 @@ export async function devDispatchWebtrigger(request) {
       return reply(200, await replayRun(body.replayRun));
     }
     if (body.forkRun && typeof body.forkRun === 'object') {
-      const { forkRun } = await import('../recorder/fork.js');
-      return reply(200, await forkRun(body.forkRun));
+      const forked = await forkRun(body.forkRun);
+      if (!forked || forked.ok === false) {
+        return reply(409, forked || { error: 'confirmation required', code: 'CONFIRMATION_REQUIRED' });
+      }
+      return reply(200, forked);
     }
     if (typeof body.listEvents === 'string') {
       const { getStore } = await import('../store/index.js');
@@ -81,13 +85,28 @@ export async function devDispatchWebtrigger(request) {
       return reply(200, await runKvsProbe());
     }
     let runId = String(body.runId ?? '');
+    /** @type {object|null} */
+    let planned = null;
     if (body.plan) {
-      runId = (await planSplit(body.plan, {})).runId;
+      planned = await planSplit(body.plan, {});
+      runId = planned.runId;
       console.log(`[dev-dispatch] planned ${runId}`);
     }
     if (body.statusOnly !== true) {
-      console.log(`[dev-dispatch] startRun ${runId}`);
-      await startRun(runId);
+      console.log(`[dev-dispatch] dispatchRun ${runId}`);
+      const dispatched = await dispatchRun({
+        runId,
+        confirm: body.confirm,
+        acknowledgeBlastRadius: body.acknowledgeBlastRadius,
+        confirmToken: body.confirmToken,
+      });
+      if (!dispatched || dispatched.ok === false) {
+        return reply(409, {
+          ...(dispatched || { error: 'confirmation required', code: 'CONFIRMATION_REQUIRED' }),
+          confirmToken: planned?.confirmToken,
+          acknowledgement: planned?.acknowledgement,
+        });
+      }
     }
     const run = await getRun(runId);
     const steps = await listSteps(runId);

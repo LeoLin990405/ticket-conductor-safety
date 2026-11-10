@@ -10,9 +10,10 @@
  *     client sends. No network.
  *
  *   node demo/mcp-client.mjs --local --epic PAY-1 --project PAY --goal "..."
- *     Run the same four handlers the actions call, against the in-memory
- *     store. Queues are stubbed, so no Jira issue is created. This is the
- *     path the unit test executes.
+ *     Recall and plan against the in-memory store. The run stays
+ *     `planning`. Add `--confirm` to echo the token into `dispatch-run`.
+ *     Queues are stubbed, so no Jira issue is created. This is the path
+ *     the unit test executes.
  *
  * This process never posts to Atlassian. Cursor and Claude are the live
  * clients: they open the OAuth screen themselves. A live call also needs
@@ -32,6 +33,7 @@ import { readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 
 import { handoffGoal, defaultStepsJson } from '../src/actions/handoff.js';
+import { dispatchRun, getRunStatus } from '../src/actions/index.js';
 import { REUSABLE_TOOL_KEYS } from '../src/actions/contract.js';
 import { createMemoryStore, setStore } from '../src/store/index.js';
 
@@ -108,7 +110,12 @@ export function plannedToolCalls(input) {
     },
     {
       name: 'dispatch-run',
-      arguments: { runId: '{{plan-split.runId}}' },
+      arguments: {
+        runId: '{{plan-split.runId}}',
+        confirm: true,
+        acknowledgeBlastRadius: '{{plan-split.acknowledgement}}',
+        confirmToken: '{{plan-split.confirmToken}}',
+      },
     },
     {
       name: 'get-run-status',
@@ -148,6 +155,7 @@ export function parseArgs(argv) {
     else if (token === '--project') args.project = argv[++index];
     else if (token === '--goal') args.goal = argv[++index];
     else if (token === '--steps-json') args.stepsJson = argv[++index];
+    else if (token === '--confirm') args.confirm = true;
     else if (token === '--help' || token === '-h') args.help = true;
     else throw new Error(`Unknown argument ${token}`);
   }
@@ -159,27 +167,43 @@ export function parseArgs(argv) {
  * entity store. The queue stubs replace `@forge/events`, so this function
  * is safe outside the Forge runtime and does not write to Jira.
  *
- * @param {{epicKey: string, projectKey: string, goal: string, stepsJson?: string}} input
+ * @param {{epicKey: string, projectKey: string, goal: string, stepsJson?: string, confirm?: boolean}} input
  */
 export async function runLocalHandoff(input) {
   const store = createMemoryStore({ now: () => 1_700_000_000_000 });
   setStore(store);
   const stepsJson = input.stepsJson || defaultStepsJson(input.goal);
+  const context = { principal: { accountId: 'mcp-local-demo' } };
   const overrides = {
     store,
+    now: () => 1_700_000_000_000,
     enqueueEffect: async () => ({ requestKey: 'local-demo', created: true }),
     enqueueStep: async () => ({ jobId: 'local-demo' }),
   };
-  return handoffGoal(
+  const planned = await handoffGoal(
     {
       epicKey: input.epicKey,
       projectKey: input.projectKey,
       goal: input.goal,
       stepsJson,
     },
-    { principal: { accountId: 'mcp-local-demo' } },
+    context,
     overrides,
   );
+  if (input.confirm !== true || planned.ok === false) return planned;
+  const dispatched = await dispatchRun({
+    runId: planned.runId,
+    confirm: true,
+    acknowledgeBlastRadius: planned.acknowledgement,
+    confirmToken: planned.confirmToken,
+  }, context, overrides);
+  const status = await getRunStatus({ runId: planned.runId });
+  return {
+    ...dispatched,
+    run: status.run,
+    steps: status.steps,
+    calls: planned.calls,
+  };
 }
 
 /**
@@ -229,6 +253,7 @@ export async function main(argv) {
       projectKey: String(args.project || String(args.epic).split('-')[0]),
       goal: String(args.goal),
       stepsJson: typeof args.stepsJson === 'string' ? args.stepsJson : undefined,
+      confirm: args.confirm === true,
     });
     console.log(JSON.stringify(result, null, 2));
     return result.ok ? 0 : 1;

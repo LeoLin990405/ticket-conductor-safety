@@ -40,7 +40,14 @@ test('a sibling runs while the gate and its dependent stay waiting', async () =>
   );
   assert.equal(
     harness.enqueuedEffects.filter((effect) => effect.kind === 'createIssue').length,
-    3,
+    2,
+  );
+  assert.deepEqual(
+    harness.enqueuedEffects
+      .filter((effect) => effect.kind === 'createIssue')
+      .map((effect) => effect.stepId)
+      .sort(),
+    [steps[0].stepId, steps[1].stepId].sort(),
   );
   const parked = await harness.store.getStep(steps[1].stepId);
   const draft = await harness.store.getStep(steps[2].stepId);
@@ -68,6 +75,10 @@ test('a sibling runs while the gate and its dependent stay waiting', async () =>
   assert.equal(approved.step.output.actor, 'manager-1');
   assert.equal(harness.stepEvents.length, 2);
   assert.equal(harness.stepEvents[1].stepId, steps[2].stepId);
+  assert.equal(
+    harness.enqueuedEffects.filter((effect) => effect.kind === 'createIssue' && effect.stepId === steps[2].stepId).length,
+    1,
+  );
   const released = await harness.store.getStep(steps[2].stepId);
   assert.equal(released.status, 'queued');
   assert.equal(released.dependencyContext[0].workerType, 'approval');

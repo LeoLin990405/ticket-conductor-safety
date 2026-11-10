@@ -38,7 +38,7 @@ export const TOOL_DESCRIPTIONS = Object.freeze({
   'plan-split':
     'Other agents call this to save a Conductor plan. Returns {ok,runId,status,steps,recalledMemories}. stepsJson is JSON text of 1-8 objects {title,workerType,input,dependsOn}. dependsOn is step indexes; a cycle is rejected. No Jira writes.',
   'dispatch-run':
-    'Other agents call this to start a saved plan. Input runId from plan-split. Returns {ok,runId,status}. A step starts when every dependsOn index is done; others wait. A repeat call does not enqueue again. No Jira writes.',
+    'Start a saved plan. Requires boolean confirm, acknowledgeBlastRadius, and confirmToken from plan-split. A mismatch leaves the run planning and writes nothing. A repeat does not enqueue again.',
   'get-run-status':
     'Other agents call this to read a Conductor run. Pass runId, or epicKey for the latest run. Returns {ok,run,steps}. Each step has idx, title, workerType, status, dependsOn, childIssueKey, attempt. waiting means a dependency is not done. Read-only.',
   'recall-memory':
@@ -69,7 +69,7 @@ export const RECORDER_DESCRIPTIONS = Object.freeze({
   'replay-run':
     'Dry-run a saved run against today\'s Jira. Returns {ok,dryRun,duplicateWrites,steps,effects,lessons}. Uses lessons valid at the run createdAt. Names newer lessons in the diff. Writes nothing.',
   'fork-run':
-    'Fork a run from one step. Returns {ok,runId,status,forkedFromRunId,copy,rerun}. Re-runs only steps that depend on stepIdx. Optional input edits that step too. Prefix effects are not written again.',
+    'Fork a run from one step. Requires boolean confirm, acknowledgeBlastRadius, and confirmToken. Re-runs steps that depend on stepIdx. A mismatch writes nothing. Prefix effects are not written again.',
 });
 
 /**

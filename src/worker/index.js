@@ -36,6 +36,7 @@ import { recordFaultInjected, safeChaos } from '../chaos/counters.js';
 import { isFaultInjectionEnabled, takeKillWorker } from '../chaos/faults.js';
 import { demoHangDelayMs, shouldDemoHang } from '../watchdog/demo.js';
 import { briefForStep } from '../skills/brief.js';
+import { runBudgetStop } from '../run/budget.js';
 import { SkillContractError } from '../skills/errors.js';
 import { tryLoadSkill } from '../skills/library.js';
 import { runSubAgent } from '../skills/runSubAgent.js';
@@ -465,6 +466,23 @@ export async function stepWorkerHandler(event, overrides) {
         claimedStep,
         new Error(`Run ${claimedStep.runId} disappeared while starting a step`),
       );
+    }
+
+    // Hard stop before this step comments, transitions, or calls the model.
+    // The child issue may already exist from dispatch. Nothing further is
+    // enqueued, and the run is marked blocked so a retry does not continue.
+    const budgetStop = runBudgetStop(ctx.run.budget, dependencies.now(), ctx.run.createdAt);
+    if (budgetStop && (ctx.run.status === 'running' || ctx.run.status === 'blocked')) {
+      if (ctx.run.status === 'running') {
+        await dependencies.store.updateRun(ctx.run.runId, {
+          status: 'blocked',
+          budget: budgetStop.budget,
+        });
+      }
+      const budgetError = new Error(`run budget exceeded (${budgetStop.reason})`);
+      budgetError.code = 'BUDGET_EXCEEDED';
+      budgetError.status = 'blocked';
+      return failStep(dependencies, claimedStep, budgetError, modelMeter);
     }
 
     // Demo switch owned by WP4. Hang once, on attempt 0, and leave the step

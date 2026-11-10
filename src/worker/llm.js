@@ -35,7 +35,7 @@
  * @module worker/llm
  */
 
-import { noteModelResult } from '../run/budget.js';
+import { budgetStopReason, modelCallsExhausted, noteModelResult } from '../run/budget.js';
 import { messageText } from './guard.js';
 
 /**
@@ -229,6 +229,12 @@ async function resolveClient(llm) {
 export async function completeText(request, llm) {
   if (llmDisabled(llm)) {
     return { ok: false, reason: 'disabled' };
+  }
+  // A caller that passes the live run budget gets a hard stop. The chat
+  // function is not called, and the meter is not incremented. Callers that
+  // omit `budget` are unchanged (the worker checks before it composes).
+  if (request?.budget && (budgetStopReason(request.budget) || modelCallsExhausted(request.budget))) {
+    return { ok: false, reason: 'budget' };
   }
   const client = await resolveClient(llm);
   if (!client) {

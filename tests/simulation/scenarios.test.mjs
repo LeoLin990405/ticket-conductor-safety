@@ -809,14 +809,17 @@ testSerial('another agent calls Conductor as a tool and a second dispatch does n
       stepsJson: defaultStepsJson(GOAL),
     });
     assert.equal(handed.ok, true);
+    assert.equal(handed.awaitingConfirmation, true);
+    assert.equal(handed.status, 'planning');
     assert.deepEqual(handed.calls.map((call) => call.tool), [
       'recall-memory',
       'plan-split',
-      'dispatch-run',
-      'get-run-status',
     ]);
     assert.ok(handed.calls.every((call) => call.result.ok === true));
     assert.equal(world.jira.mutationsOf('createIssue').length, 0);
+    const confirmed = await world.invoke('dispatch-run', { runId: handed.runId });
+    assert.equal(confirmed.ok, true, confirmed.error);
+    assert.equal(confirmed.status, 'running');
     const recalled = handed.calls[0].result;
     assert.ok(Array.isArray(recalled.skillIndex));
     assert.ok(recalled.skillIndex.some((skill) => skill.name === 'research' && skill.description));
@@ -1833,11 +1836,12 @@ testSerial('an approval gate holds its dependents while a sibling finishes', asy
     assert.equal(draft.attempt, 0);
     assert.equal((await world.store.getRun(planned.runId)).status, 'running');
     assert.ok(gate.childIssueKey);
+    assert.equal(draft.childIssueKey ?? null, null);
     const gateComments = world.jira.mutationsOf('comment').filter((comment) => (
       comment.issueKey === gate.childIssueKey
     ));
     assert.equal(gateComments.length, 0);
-    assert.equal(world.jira.mutationsOf('createIssue').length, 3);
+    assert.equal(world.jira.mutationsOf('createIssue').length, 2);
 
     world.clock.advance(STEP_DEADLINE_MS + STUCK_QUEUED_MS);
     const pass = await world.watchdog.run();
@@ -1873,6 +1877,8 @@ testSerial('an approval gate holds its dependents while a sibling finishes', asy
     assert.equal(doneDraft.dependencyContext[0].workerType, 'approval');
     assert.equal(doneDraft.dependencyContext[0].output.approved, true);
     assert.equal(steps.find((step) => step.stepId === research.stepId).status, 'done');
+    assert.equal(typeof doneDraft.childIssueKey, 'string');
+    assert.equal(world.jira.mutationsOf('createIssue').length, 3);
     assertWithinBudget(world.sdk, 'approval-gate');
   } finally {
     await world.close();
@@ -2032,9 +2038,13 @@ testSerial('a plan over the blast threshold grows one approval gate', async () =
     for (const step of stored) {
       assert.equal(step.status, 'waiting');
       assert.equal(step.attempt, 0);
-      assert.ok(step.childIssueKey);
+      if (step.workerType === 'approval') {
+        assert.equal(typeof step.childIssueKey, 'string');
+      } else {
+        assert.equal(step.childIssueKey ?? null, null);
+      }
     }
-    assert.equal(world.jira.mutationsOf('createIssue').length, 6);
+    assert.equal(world.jira.mutationsOf('createIssue').length, 1);
     assert.equal(world.jira.mutationsOf('comment').length, 0);
     assert.equal((await world.store.getRun(planned.runId)).status, 'running');
 

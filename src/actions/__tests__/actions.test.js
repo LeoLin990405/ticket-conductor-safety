@@ -132,11 +132,36 @@ test('dispatchRun returns the preview computed before enqueue and does not call 
       steps: [{ title: 'Research refunds', workerType: 'research', input: 'x' }],
     });
     assert.equal(planned.blastRadius.phase, 'preview');
-    const started = await dispatchRun(
-      { runId: planned.runId },
+    assert.equal(typeof planned.confirmToken, 'string');
+    assert.match(planned.acknowledgement, /points/);
+    const refused = await dispatchRun(
+      { runId: planned.runId, confirm: true },
       {},
       {
         store,
+        now: () => 1_700_000_000_000,
+        enqueueEffect: async () => {
+          throw new Error('an unconfirmed dispatch must not enqueue');
+        },
+        enqueueStep: async () => {
+          throw new Error('an unconfirmed dispatch must not enqueue');
+        },
+      },
+    );
+    assert.equal(refused.ok, false);
+    assert.equal(refused.code, 'CONFIRMATION_REQUIRED');
+    assert.equal(refused.status, 'planning');
+    const started = await dispatchRun(
+      {
+        runId: planned.runId,
+        confirm: true,
+        acknowledgeBlastRadius: planned.acknowledgement,
+        confirmToken: planned.confirmToken,
+      },
+      {},
+      {
+        store,
+        now: () => 1_700_000_000_000,
         enqueueEffect: async (effect) => {
           enqueued.push(effect);
           return { requestKey: 'k', created: true };
@@ -169,7 +194,7 @@ test('dispatchRun returns the preview computed before enqueue and does not call 
   }
 });
 
-test('dispatchRun does not need confirm and is a no-op once the run is running', async () => {
+test('dispatchRun ignores a second call once the run is running', async () => {
   const store = installStore();
   try {
     const planned = await planSplit({
@@ -180,17 +205,23 @@ test('dispatchRun does not need confirm and is a no-op once the run is running',
     });
     const overrides = {
       store,
+      now: () => 1_700_000_000_000,
       enqueueEffect: async () => ({ requestKey: 'k', created: true }),
       enqueueStep: async () => ({ jobId: 'job' }),
     };
     const started = await dispatchRun(
-      { runId: planned.runId },
+      {
+        runId: planned.runId,
+        confirm: true,
+        acknowledgeBlastRadius: planned.acknowledgement,
+        confirmToken: planned.confirmToken,
+      },
       {},
       overrides,
     );
     assert.equal(started.status, 'running');
     const again = await dispatchRun(
-      { runId: planned.runId, confirm: true },
+      { runId: planned.runId },
       {},
       overrides,
     );

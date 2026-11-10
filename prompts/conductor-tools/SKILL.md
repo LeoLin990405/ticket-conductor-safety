@@ -11,7 +11,7 @@ allowed-tools: plan-split dispatch-run get-run-status recall-memory
 
 # Hand a goal to Ticket Conductor
 
-You are calling Ticket Conductor's tools. You are not the supervisor that owns the Epic. The person who asked you to hand the goal over has already confirmed it. Do not ask them to confirm a second time.
+You are calling Ticket Conductor's tools. You are not the supervisor that owns the Epic. Planning does not start the run. Show the plan and the blast-radius acknowledgement, then stop. `dispatch-run` is a later turn, after the person agrees. "Plan and run" is not a confirmation.
 
 Read references/io.md when you need the field list. The shapes below are enough to call the tools.
 
@@ -19,7 +19,7 @@ Read references/io.md when you need the field list. The shapes below are enough 
 
 1. Call `recall-memory` with `projectKey` and `query`. `query` is the goal plus the Epic summary.
 2. Draft 1 to 8 steps. Call `plan-split` with `epicKey`, `goal`, `stepsJson`, and `projectKey` when you know it.
-3. From the `plan-split` result, take `runId`. Call `dispatch-run` with that `runId` only. Call it once.
+3. From the `plan-split` result, take `runId`, `acknowledgement`, and `confirmToken`. Do not call `dispatch-run` in this turn. After the person agrees, call `dispatch-run` with `runId`, `confirm` boolean `true`, `acknowledgeBlastRadius` set to `acknowledgement`, and `confirmToken`. A mismatch leaves the run `planning`.
 4. Call `get-run-status` with that `runId`. Report `run.status` and the steps from that result. Do not invent a child issue key.
 
 Stop if any result has `ok` set to false. Quote `error` and `code`. Do not call `dispatch-run` after a failed `plan-split`.

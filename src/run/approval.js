@@ -43,6 +43,65 @@ export function isApprovalGate(step) {
 }
 
 /**
+ * Step ids that must not get a child issue yet.
+ *
+ * A step is held when an approval gate it depends on, directly or through
+ * another step that is not `done`, is still open. The gate itself is not
+ * held: its child is the issue a person transitions to approve. A sibling
+ * that does not depend on the gate is not held.
+ *
+ * @param {Array<object>|null|undefined} steps
+ * @returns {Set<string>}
+ */
+export function stepIdsBlockedByOpenApproval(steps) {
+  const list = Array.isArray(steps) ? steps : [];
+  /** @type {Map<number, object>} */
+  const byIdx = new Map();
+  for (const step of list) {
+    if (step && Number.isInteger(step.idx)) byIdx.set(step.idx, step);
+  }
+  /** @type {Map<string, boolean>} */
+  const memo = new Map();
+  /**
+   * @param {object|null|undefined} step
+   * @param {Set<string>} stack
+   * @returns {boolean}
+   */
+  function blockedByGate(step, stack) {
+    if (!step || isApprovalGate(step)) return false;
+    const id = typeof step.stepId === 'string' ? step.stepId : '';
+    if (id && memo.has(id)) return memo.get(id) === true;
+    if (id && stack.has(id)) return false;
+    if (id) stack.add(id);
+    let hit = false;
+    const deps = Array.isArray(step.dependsOn) ? step.dependsOn : [];
+    for (const idx of deps) {
+      const dep = byIdx.get(idx);
+      if (!dep) continue;
+      if (isApprovalGate(dep) && dep.status !== 'done') {
+        hit = true;
+        break;
+      }
+      if (dep.status !== 'done' && blockedByGate(dep, stack)) {
+        hit = true;
+        break;
+      }
+    }
+    if (id) stack.delete(id);
+    if (id) memo.set(id, hit);
+    return hit;
+  }
+  /** @type {Set<string>} */
+  const blocked = new Set();
+  for (const step of list) {
+    if (step?.stepId && blockedByGate(step, new Set())) {
+      blocked.add(step.stepId);
+    }
+  }
+  return blocked;
+}
+
+/**
  * Insert the blast-radius gate before the steps are stored.
  *
  * `previewBlastRadius` needs a `stepId` on every row so it can name request

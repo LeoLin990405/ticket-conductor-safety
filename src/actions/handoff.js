@@ -5,29 +5,25 @@
  * the other side of that: a second Rovo agent, a Rovo Studio agent, or an
  * MCP client (Cursor, Claude) that already has a goal and wants a run.
  *
- * The sequence is fixed so every caller sees the same side effects:
+ * The sequence inside this function stops before any Jira enqueue:
  *
  * 1. `recall-memory` (read-only) so the plan can follow a stored decision.
- * 2. `plan-split` stores the run at status `planning`. No Jira write.
- * 3. `dispatch-run` moves it to `running` and enqueues work. Calling it
- *    again on the same runId does not enqueue a second time.
- * 4. `get-run-status` reads the run back. Child issue keys are often still
- *    null here, because the effect applier creates them after this returns.
+ * 2. `plan-split` stores the run at status `planning` and returns
+ *    `acknowledgement` and `confirmToken`. No Jira write.
  *
- * The user's request to the calling agent is the confirmation. This
- * function does not ask again. Rovo may still show its own card for the
- * UPDATE action `dispatch-run`; that card is the platform's, not ours.
+ * A `confirm` flag on this same call is ignored. The token did not exist
+ * until `plan-split` returned, so the caller cannot have echoed it yet.
+ * The caller passes those two strings to `dispatch-run`. Rovo may still
+ * show its own card for that UPDATE action. The card is not the check.
  *
- * Nothing in this file calls Jira. Dispatch only enqueues, and the test
- * injects that queue through `overrides` the same way `dispatchRun` does.
+ * Nothing in this file calls Jira. `overrides` is the dependency bag the
+ * caller will pass to the later `dispatch-run`.
  *
  * @module actions/handoff
  */
 
 import { StoreValidationError } from '../store/index.js';
 import {
-  dispatchRun,
-  getRunStatus,
   planSplit,
   recallMemory,
 } from './index.js';
@@ -167,65 +163,21 @@ export async function handoffGoal(input, context, overrides) {
     };
   }
 
-  // 3. Start the run. The calling agent's user request is the confirmation.
-  let dispatched;
-  try {
-    dispatched = await dispatchRun({ runId: planned.runId }, context, overrides);
-    calls.push({
-      tool: 'dispatch-run',
-      arguments: { runId: planned.runId },
-      result: dispatched,
-    });
-  } catch (error) {
-    const described = describeError(error);
-    return {
-      ok: false,
-      stage: 'dispatch-run',
-      runId: planned.runId,
-      calls,
-      error: described.message,
-      code: described.code,
-    };
-  }
-
-  if (!dispatched || dispatched.ok === false) {
-    return {
-      ok: false,
-      stage: 'dispatch-run',
-      runId: planned.runId,
-      calls,
-      error: dispatched?.error || 'dispatch-run failed',
-      code: dispatched?.code || 'ERROR',
-    };
-  }
-
-  // 4. Read back. Child keys are usually still null at this moment.
-  let status;
-  try {
-    status = await getRunStatus({ runId: planned.runId });
-    calls.push({
-      tool: 'get-run-status',
-      arguments: { runId: planned.runId },
-      result: status,
-    });
-  } catch (error) {
-    const described = describeError(error);
-    return {
-      ok: false,
-      stage: 'get-run-status',
-      runId: planned.runId,
-      calls,
-      error: described.message,
-      code: described.code,
-    };
-  }
-
+  // 3. Do not dispatch from this function. The token was just created, so
+  // the caller cannot have echoed it yet. A `confirm` flag on this same
+  // call is ignored. The caller passes the token to `dispatch-run`.
+  // `overrides` is accepted so a test can pass the same dependency bag it
+  // will hand to that later `dispatch-run`.
+  void overrides;
   return {
-    ok: status?.ok !== false,
+    ok: true,
+    awaitingConfirmation: true,
+    stage: 'plan-split',
     runId: planned.runId,
-    status: status?.run?.status ?? dispatched.status ?? null,
-    run: status?.run ?? null,
-    steps: status?.steps ?? [],
+    status: 'planning',
+    confirmToken: planned.confirmToken,
+    acknowledgement: planned.acknowledgement,
+    blastRadius: planned.blastRadius,
     calls,
   };
 }
