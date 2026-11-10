@@ -14,8 +14,7 @@ import test from 'node:test';
 
 import { parsePlanSteps, planSplit, recallMemory } from '../../actions/index.js';
 import { resetLocks } from '../../run/locks.js';
-import { startRun } from '../../run/stateMachine.js';
-import { createHarness } from '../../run/__tests__/harness.js';
+import { createHarness, startApproved } from '../../run/__tests__/harness.js';
 import { createFakeForgeSdk } from '../../store/__tests__/fakeForgeKvs.js';
 import {
   createForgeStore,
@@ -165,7 +164,7 @@ test('research stores a short result and comments the full output on the child',
   await harness.createSteps(run.runId, [
     { title: 'Research refunds', workerType: 'research', input: 'refunds' },
   ]);
-  await startRun(run.runId, harness.dependencies);
+  await startApproved(run.runId, harness.dependencies);
   const [result] = await harness.processAll();
   assert.equal(result.status, 'done');
 
@@ -193,7 +192,7 @@ test('risk-review runs from the markdown file with no worker function', async ()
   await harness.createSteps(run.runId, [
     { title: 'Review refund risk', workerType: 'risk-review', input: 'ledger' },
   ]);
-  await startRun(run.runId, harness.dependencies);
+  await startApproved(run.runId, harness.dependencies);
   const [result] = await harness.processAll();
   assert.equal(result.status, 'done');
   const [step] = await harness.store.listSteps(run.runId);
@@ -225,7 +224,7 @@ outputSchema: {"type":"object","required":["verdict"],"properties":{"verdict":{"
     await harness.createSteps(run.runId, [
       { title: 'Impossible', workerType: 'impossible', input: '' },
     ]);
-    await startRun(run.runId, harness.dependencies);
+    await startApproved(run.runId, harness.dependencies);
     const [result] = await harness.processAll();
     assert.equal(result.status, 'blocked');
     assert.equal(result.error.code, 'SCHEMA_INVALID');
@@ -249,7 +248,7 @@ test('a tool outside the brief blocks the step', async () => {
       input: { allowedTools: [] },
     },
   ]);
-  await startRun(run.runId, harness.dependencies);
+  await startApproved(run.runId, harness.dependencies);
   const [result] = await harness.processAll();
   assert.equal(result.status, 'blocked');
   assert.equal(result.error.code, 'TOOL_NOT_ALLOWED');
@@ -262,7 +261,7 @@ test('the model hook can fill a checklist skill, and null keeps the checklist', 
   await harness.createSteps(run.runId, [
     { title: 'Plan tests', workerType: 'test-plan', input: 'refunds' },
   ]);
-  await startRun(run.runId, harness.dependencies);
+  await startApproved(run.runId, harness.dependencies);
   registerSkillModel(async () => ({ summary: 'Model wrote two cases.', confidence: 0.9 }));
   const [result] = await harness.processAll();
   assert.equal(result.status, 'done');
@@ -275,7 +274,7 @@ test('the model hook can fill a checklist skill, and null keeps the checklist', 
   await harness2.createSteps(run2.runId, [
     { title: 'Plan tests', workerType: 'test-plan', input: 'refunds' },
   ]);
-  await startRun(run2.runId, harness2.dependencies);
+  await startApproved(run2.runId, harness2.dependencies);
   const [again] = await harness2.processAll();
   assert.equal(again.status, 'done');
   const [step2] = await harness2.store.listSteps(run2.runId);

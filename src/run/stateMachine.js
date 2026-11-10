@@ -50,8 +50,8 @@ import { maybeReviewWave } from './leadLoop.js';
 import { workSteps } from './digest.js';
 import { planCardFromSteps, previewBlastRadius } from '../blast/preview.js';
 import { isApprovalGate, stepIdsBlockedByOpenApproval } from './approval.js';
-import { applyRunBudget, commitRunBudget, runBudgetStop } from './budget.js';
-import { evaluateDispatchAuthorization } from '../safety/guard.js';
+import { applyBudgetStop, applyRunBudget, commitRunBudget, runBudgetStop } from './budget.js';
+import { authorizeDispatch } from '../safety/grants.js';
 
 /**
  * Statuses after which a run must not change again in WP3.
@@ -342,12 +342,15 @@ async function recomputeRunStatusUnlocked(dependencies, runId) {
  * dispatch is idempotent and returns the current record. This also protects
  * `dispatch-run` retries from double-queueing every step.
  *
+ * A run that is still `planning` does not leave that status unless
+ * `overrides.confirmation` carries a human grant from `safety/grants.js`.
+ * There is no flag that skips the check.
+ *
  * @param {string} runId
- * @param {Partial<import('./dependencies.js').Wp3Dependencies>} [overrides]
+ * @param {Partial<import('./dependencies.js').Wp3Dependencies> & {confirmation?: object}} [overrides]
  * @returns {Promise<import('../store/types.js').Run>}
  */
 export async function startRun(runId, overrides) {
-  const requireConfirmation = overrides?.requireConfirmation === true;
   const confirmation = overrides?.confirmation;
   const dependencies = resolveDependencies(overrides);
   if (typeof runId !== 'string' || runId.length === 0) {
@@ -377,23 +380,16 @@ export async function startRun(runId, overrides) {
       steps,
       planCard: planCardFromSteps(steps),
     });
-    // Agent-facing callers set `requireConfirmation`. The internal state
-    // machine does not, so a unit test that drives `startRun` still starts.
-    // `dispatch-run`, `fork` is separate, `handoff`, and the dev webtrigger
-    // all set the flag. A refusal returns the planning run and enqueues
+    // Every caller, including fork and the unit harness, presents a grant.
+    // A missing or reused token returns the planning run and enqueues
     // nothing. The card is on the return value only.
-    if (requireConfirmation) {
-      const decision = evaluateDispatchAuthorization(confirmation, blastRadius);
-      if (!decision.ok) {
-        return { ...run, blastRadius, refusedConfirmation: decision };
-      }
+    const decision = authorizeDispatch(confirmation, blastRadius, dependencies.now());
+    if (!decision.ok) {
+      return { ...run, blastRadius, refusedConfirmation: decision };
     }
     const budgetStop = runBudgetStop(run.budget, dependencies.now(), run.createdAt);
     if (budgetStop) {
-      const blockedRun = await patchRun(dependencies.store, runId, {
-        status: 'blocked',
-        budget: budgetStop.budget,
-      });
+      const blockedRun = await applyBudgetStop(dependencies.store, run, budgetStop);
       return { ...blockedRun, blastRadius, budgetStopped: budgetStop.reason };
     }
     // Refresh elapsed on the write this transition already does. The
@@ -529,12 +525,7 @@ async function releaseWaitingSteps(dependencies, runId, steps) {
         runForIssue?.createdAt,
       );
       if (budgetStop) {
-        if (runForIssue && runForIssue.status === 'running') {
-          await dependencies.store.updateRun(runId, {
-            status: 'blocked',
-            budget: budgetStop.budget,
-          });
-        }
+        await applyBudgetStop(dependencies.store, runForIssue, budgetStop);
         return;
       }
       await dependencies.enqueueEffect({

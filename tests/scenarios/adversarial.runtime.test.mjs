@@ -16,6 +16,7 @@
 import assert from 'node:assert/strict';
 
 import { dispatchRun, planSplit } from '../../src/actions/index.js';
+import { issueHumanConfirmation } from '../../src/safety/grants.js';
 import {
   assertNoUnapprovedEffects,
   createWorld,
@@ -199,8 +200,15 @@ testSerial('try 3: planning alone enqueues nothing (Rovo owns confirmation), and
     assert.equal(world.bus.size('step-queue'), 0);
     assert.equal(world.bus.size('effect-queue'), 0);
 
+    const issued = await issueHumanConfirmation({
+      runId: saved.runId,
+      store: world.store,
+      now: world.dependencies.now,
+      principal: 'person',
+    });
+    assert.equal(saved.confirmToken, undefined);
     const stringConfirm = await dispatchRun(
-      { runId: saved.runId, confirm: 'true', confirmToken: saved.confirmToken, acknowledgeBlastRadius: saved.acknowledgement },
+      { runId: saved.runId, confirm: 'true', confirmToken: issued.confirmToken, acknowledgeBlastRadius: issued.acknowledgement },
       {},
       world.dependencies,
     );
@@ -211,8 +219,8 @@ testSerial('try 3: planning alone enqueues nothing (Rovo owns confirmation), and
       {
         runId: saved.runId,
         confirm: true,
-        acknowledgeBlastRadius: saved.acknowledgement,
-        confirmToken: saved.confirmToken,
+        acknowledgeBlastRadius: issued.acknowledgement,
+        confirmToken: issued.confirmToken,
       },
       {},
       world.dependencies,

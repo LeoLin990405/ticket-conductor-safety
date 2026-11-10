@@ -17,7 +17,7 @@ import test from 'node:test';
 
 import { effectApplierHandler } from '../../src/effects/index.js';
 import { recall, record, writeBack } from '../../src/memory/index.js';
-import { startRun } from '../../src/run/stateMachine.js';
+import { startApproved } from '../../src/run/__tests__/harness.js';
 import { registerWorkerType, stepWorkerHandler } from '../../src/worker/index.js';
 import { STALE_EFFECT_MS } from '../../src/watchdog/constants.js';
 
@@ -302,7 +302,7 @@ testSerial('a demo-hung step is recovered by the watchdog without a second child
       goal: seed.demo.primaryGoal,
       steps: planned,
     });
-    await startRun(run.runId, world.dependencies);
+    await startApproved(run.runId, world.dependencies);
 
     await world.drainEffects();
     assert.equal(world.jira.mutationsOf('createIssue').length, planned.length);

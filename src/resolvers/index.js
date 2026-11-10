@@ -1,8 +1,10 @@
 /**
- * Read-only resolver for the Run panel (WP8), plus an optional retry.
+ * Resolver for the Run panel (WP8).
  *
- * The panel must stay under the 25 second UI resolver limit, so these
- * handlers only read the store or push one queue event. They do not call Jira.
+ * Reads stay under the 25 second UI resolver limit. `approveRun` and
+ * `forkRun` are the human approval surface: they mint a confirmation grant
+ * and consume it in this invocation. The token is not returned. They do
+ * not call Jira themselves.
  *
  * @module resolvers
  */
@@ -12,11 +14,13 @@ import resolverModule from '@forge/resolver';
 import { deadlineFor } from '../run/stateMachine.js';
 import {
   getStep,
+  getStore,
   updateStep,
 } from '../store/index.js';
+import { dispatchRun, forkRun } from '../actions/index.js';
 import { lessonOp } from '../memory/lessons.js';
-import { forkRun } from '../recorder/fork.js';
 import { replayRun } from '../recorder/replay.js';
+import { approveFromPanel, issueForkGrant } from '../safety/grants.js';
 import { issueKeyFrom, exportRunTrace, loadRun, loadRunsForIssue } from './panelData.js';
 import { pushWithRetry } from '../platform/queuePushRetry.js';
 
@@ -51,6 +55,31 @@ resolver.define('getRun', async (request) => {
     };
   }
   return loadRun(runId);
+});
+
+/**
+ * The Forge resolver context carries the person. The payload cannot.
+ *
+ * @param {object|null|undefined} request
+ * @returns {string}
+ */
+function panelAccountId(request) {
+  const direct = request?.context?.accountId;
+  if (typeof direct === 'string' && direct.trim().length > 0) return direct.trim();
+  const principal = request?.context?.principal?.accountId;
+  if (typeof principal === 'string' && principal.trim().length > 0) return principal.trim();
+  return '';
+}
+
+resolver.define('approveRun', async (request) => {
+  const runId = request?.payload?.runId;
+  return approveFromPanel({
+    runId,
+    accountId: panelAccountId(request),
+    now: () => Date.now(),
+    store: getStore(),
+    dispatch: (payload) => dispatchRun(payload),
+  });
 });
 
 resolver.define('retryStep', async (request) => {
@@ -105,19 +134,50 @@ resolver.define('replayRun', async (request) => {
 });
 
 resolver.define('forkRun', async (request) => {
+  const accountId = panelAccountId(request);
+  if (!accountId) {
+    return { ok: false, code: 'CONFIRMATION_REQUIRED', error: 'the Run panel must be opened by a person' };
+  }
   const runId = request?.payload?.runId;
   const stepIdx = request?.payload?.stepIdx;
   if (typeof runId !== 'string' || runId.length === 0) {
     return { ok: false, error: 'runId is required' };
   }
   try {
+    const input = request?.payload && Object.prototype.hasOwnProperty.call(request.payload, 'input')
+      ? request.payload.input
+      : undefined;
+    const issued = issueForkGrant({
+      runId,
+      stepIdx,
+      input,
+      now: () => Date.now(),
+      principal: accountId,
+    });
     /** @type {Record<string, unknown>} */
-    const input = { runId, stepIdx };
-    if (request?.payload && Object.prototype.hasOwnProperty.call(request.payload, 'input')) {
-      input.input = request.payload.input;
+    const payload = {
+      runId,
+      stepIdx,
+      confirm: true,
+      acknowledgeBlastRadius: issued.acknowledgement,
+      confirmToken: issued.confirmToken,
+    };
+    if (input !== undefined) payload.input = input;
+    const result = await forkRun(payload, { principal: { accountId } });
+    if (!result || result.ok === false) {
+      return {
+        ok: false,
+        code: result?.code,
+        error: result?.error || 'fork failed',
+      };
     }
-    const result = await forkRun(input);
-    return { ok: true, ...result };
+    return {
+      ok: true,
+      runId: result.runId,
+      status: result.status,
+      forkedFromRunId: result.forkedFromRunId,
+      forkedFromStepIdx: result.forkedFromStepIdx,
+    };
   } catch (error) {
     return {
       ok: false,

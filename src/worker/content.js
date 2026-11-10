@@ -133,6 +133,60 @@ export function transitionEffect(step, run) {
 }
 
 /**
+ * The field edit the blast-radius card lists when a step sets
+ * `input.fields`. Only string, number, boolean, and null values are
+ * written. The discriminator is `fields:` plus the names sorted, the same
+ * string `plannedRequestKey` uses when every value is a scalar.
+ *
+ * `fieldsTarget: 'epic'` aims at the run's Epic. `fieldsIssueKey` aims at
+ * that issue. Otherwise the target is this step's child. Undo of a child
+ * edit is covered by closing the child. Undo of any other issue is
+ * `restoreFields`, using the previous values the applier stored.
+ *
+ * @param {import('../store/types.js').Step} step
+ * @param {{epicKey?: string}|null|undefined} run
+ * @returns {Array<Record<string, any>>}
+ */
+export function fieldEffect(step, run) {
+  const input = step?.input && typeof step.input === 'object' && !Array.isArray(step.input)
+    ? /** @type {Record<string, unknown>} */ (step.input)
+    : {};
+  const raw = input.fields;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return [];
+  /** @type {Record<string, string|number|boolean|null>} */
+  const fields = {};
+  for (const name of Object.keys(raw).sort()) {
+    if (!/^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(name)) continue;
+    const value = raw[name];
+    if (value === null || typeof value === 'boolean') {
+      fields[name] = value;
+    } else if (typeof value === 'number' && Number.isFinite(value)) {
+      fields[name] = value;
+    } else if (typeof value === 'string') {
+      fields[name] = value.length > 500 ? value.slice(0, 500) : value;
+    }
+  }
+  const names = Object.keys(fields);
+  if (names.length === 0) return [];
+  let issueKey = '';
+  if (input.fieldsTarget === 'epic') {
+    issueKey = typeof run?.epicKey === 'string' ? run.epicKey : '';
+  } else if (typeof input.fieldsIssueKey === 'string' && input.fieldsIssueKey.length > 0) {
+    issueKey = input.fieldsIssueKey;
+  } else if (typeof step?.childIssueKey === 'string') {
+    issueKey = step.childIssueKey;
+  }
+  if (issueKey.length === 0) return [];
+  return [
+    {
+      kind: 'setFields',
+      payload: { issueKey, fields },
+      discriminator: `fields:${names.join(',')}`,
+    },
+  ];
+}
+
+/**
  * Chaos checkpoint. Production workers do not have `ctx.faultCheckpoint`,
  * so this returns null and the caller does not await anything. The step
  * worker installs the hook only when fault injection is enabled, and the

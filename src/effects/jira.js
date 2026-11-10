@@ -13,6 +13,10 @@
  *   Never `DELETE /rest/api/3/issue`.
  * - `recordRemovedComment` `{issueKey, commentId}` — delete that comment.
  * - `restoreStatus` `{issueKey, toStatusName, expectedStatusName}`
+ * - `setFields` `{issueKey, fields}` — scalar fields only. The result stores
+ *   `before.fields` with the values read before the PUT.
+ * - `restoreFields` `{issueKey, fields, wrote}` — PUT `fields` only when the
+ *   issue still holds `wrote`. Drift is `{skipped: true}` and does not write.
  *
  * `dependsOnKeys` may ride along on a compensation payload. It is not sent
  * to Jira. The applier reads it and waits. This module ignores it.
@@ -693,6 +697,57 @@ export async function applyJiraEffect(effect, options) {
     return transitionResult(moved.transitionId, current, payload.toStatusName);
   }
 
+  if (effect.kind === 'setFields') {
+    const payload = validateSetFieldsPayload(effect.payload);
+    const issue = await readIssue(requestJira, payload.issueKey, effect.kind);
+    const beforeFields = readScalarFields(issue, Object.keys(payload.fields));
+    const response = await requestJira(issuePath(payload.issueKey), {
+      method: 'PUT',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ fields: payload.fields }),
+    });
+    await assertJiraOk(response, 'set fields', effect.kind);
+    return {
+      issueKey: payload.issueKey,
+      before: fitBeforeSnapshot({ fields: beforeFields }),
+      after: { fields: payload.fields },
+    };
+  }
+
+  if (effect.kind === 'restoreFields') {
+    const payload = validateRestoreFieldsPayload(effect.payload);
+    const issue = await readIssue(requestJira, payload.issueKey, effect.kind);
+    const current = readScalarFields(issue, Object.keys(payload.wrote));
+    const decision = compensationApplies(
+      { kind: 'restoreFields', payload },
+      { fields: current },
+    );
+    if (!decision.apply) {
+      return {
+        skipped: true,
+        reason: decision.reason,
+        fields: current,
+      };
+    }
+    const response = await requestJira(issuePath(payload.issueKey), {
+      method: 'PUT',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ fields: payload.fields }),
+    });
+    await assertJiraOk(response, 'restore fields', effect.kind);
+    return {
+      issueKey: payload.issueKey,
+      before: fitBeforeSnapshot({ fields: current }),
+      after: { fields: payload.fields },
+    };
+  }
+
   throw new EffectValidationError(`Unsupported effect kind: ${effect.kind}`);
 }
 
@@ -717,7 +772,111 @@ export function validateEffectPayload(kind, payload) {
     validateRemovedCommentPayload(payload);
   } else if (kind === 'restoreStatus') {
     validateRestoreStatusPayload(payload);
+  } else if (kind === 'setFields') {
+    validateSetFieldsPayload(payload);
+  } else if (kind === 'restoreFields') {
+    validateRestoreFieldsPayload(payload);
   } else {
     throw new EffectValidationError(`Unsupported effect kind: ${kind}`);
   }
+}
+
+/**
+ * Scalar field values the before-image can compare with `===`.
+ * Objects and arrays are refused so a later drift check is not a
+ * reference comparison.
+ *
+ * @param {unknown} value
+ * @returns {string|number|boolean|null|undefined}
+ */
+function scalarField(value) {
+  if (value === null) return null;
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string') {
+    return value.length > 500 ? value.slice(0, 500) : value;
+  }
+  return undefined;
+}
+
+/**
+ * @param {unknown} fields
+ * @param {string} label
+ * @returns {Record<string, string|number|boolean|null>}
+ */
+function copyScalarFields(fields, label) {
+  if (!fields || typeof fields !== 'object' || Array.isArray(fields)) {
+    throw new EffectValidationError(`${label} must be an object`);
+  }
+  const names = Object.keys(fields).sort();
+  if (names.length < 1 || names.length > 12) {
+    throw new EffectValidationError(`${label} must name 1 to 12 fields`);
+  }
+  /** @type {Record<string, string|number|boolean|null>} */
+  const copy = {};
+  for (const name of names) {
+    if (!/^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(name)) {
+      throw new EffectValidationError(`${label} field name is not allowed`);
+    }
+    const scalar = scalarField(fields[name]);
+    if (scalar === undefined) {
+      throw new EffectValidationError(
+        `${label}.${name} must be a string, number, boolean, or null`,
+      );
+    }
+    copy[name] = scalar;
+  }
+  return copy;
+}
+
+/**
+ * @param {unknown} issue
+ * @param {string[]} names
+ * @returns {Record<string, string|number|boolean|null>}
+ */
+function readScalarFields(issue, names) {
+  const fields = issue && typeof issue === 'object'
+    ? /** @type {{fields?: unknown}} */ (issue).fields
+    : undefined;
+  const record = fields && typeof fields === 'object' && !Array.isArray(fields)
+    ? /** @type {Record<string, unknown>} */ (fields)
+    : {};
+  /** @type {Record<string, string|number|boolean|null>} */
+  const before = {};
+  for (const name of names) {
+    const scalar = Object.prototype.hasOwnProperty.call(record, name)
+      ? scalarField(record[name])
+      : null;
+    before[name] = scalar === undefined ? null : scalar;
+  }
+  return before;
+}
+
+/**
+ * @param {any} payload
+ * @returns {{issueKey: string, fields: Record<string, string|number|boolean|null>}}
+ */
+function validateSetFieldsPayload(payload) {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    throw new EffectValidationError('setFields payload must be an object');
+  }
+  return {
+    issueKey: requireString(payload.issueKey, 'setFields.issueKey'),
+    fields: copyScalarFields(payload.fields, 'setFields.fields'),
+  };
+}
+
+/**
+ * @param {any} payload
+ * @returns {{issueKey: string, fields: Record<string, string|number|boolean|null>, wrote: Record<string, string|number|boolean|null>}}
+ */
+function validateRestoreFieldsPayload(payload) {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    throw new EffectValidationError('restoreFields payload must be an object');
+  }
+  return {
+    issueKey: requireString(payload.issueKey, 'restoreFields.issueKey'),
+    fields: copyScalarFields(payload.fields, 'restoreFields.fields'),
+    wrote: copyScalarFields(payload.wrote, 'restoreFields.wrote'),
+  };
 }

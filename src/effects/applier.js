@@ -26,6 +26,7 @@
 import { recordDuplicateHealed, recordFaultInjected, recordJiraWrite, safeChaos } from '../chaos/counters.js';
 import { isFaultInjectionEnabled, jira429Response, takeJira429 } from '../chaos/faults.js';
 import { recordEvent } from '../recorder/log.js';
+import { isBudgetStopNoted, isForwardEffect, refuseEffectForBudgetStop } from '../run/budget.js';
 import { getStore } from '../store/index.js';
 import { EffectValidationError } from './errors.js';
 import { applyJiraEffect } from './jira.js';
@@ -577,6 +578,14 @@ export function createEffectApplier(deps = {}) {
       }
       if (effect.status !== 'pending' && effect.status !== 'retrying') {
         return effect;
+      }
+
+      // A budget stop notes the run before it drains rows. A message that
+      // arrives in that window, or after the drain write was lost, fails
+      // closed here and does not call Jira. Compensations are not forward
+      // effects, so undo can still run.
+      if (isForwardEffect(effect.kind) && isBudgetStopNoted(effect.runId)) {
+        return refuseEffectForBudgetStop(store, effect, 'noted');
       }
 
       // A compensation lists the request keys that must be `applied` first.

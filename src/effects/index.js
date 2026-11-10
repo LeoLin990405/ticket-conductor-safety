@@ -317,7 +317,7 @@ export function setRequestJira(requestJira) {
  * @param {{
  *   runId: string,
  *   stepId?: string,
- *   kind: 'createIssue'|'comment'|'transition'|'closeIssue'|'recordRemovedComment'|'restoreStatus',
+ *   kind: 'createIssue'|'comment'|'transition'|'setFields'|'closeIssue'|'recordRemovedComment'|'restoreStatus'|'restoreFields',
  *   payload: any,
  *   discriminator?: unknown,
  * }} input

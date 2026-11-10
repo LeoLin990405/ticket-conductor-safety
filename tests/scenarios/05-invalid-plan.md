@@ -55,7 +55,7 @@ A run exists in `planning` (the user asked to save and not run).
 
 - `dispatchRun({ runId, confirm: false })` does not call through to a running run. Status stays `planning`. No `step-queue` push. No `createIssue` effect.
 - `dispatchRun` with `confirm` omitted does the same.
-- `dispatchRun({ runId, confirm: true })` without `acknowledgeBlastRadius` and `confirmToken` does the same. The token and the acknowledgement have to match the blast-radius card from `plan-split`.
+- `dispatchRun({ runId, confirm: true })` without `acknowledgeBlastRadius` and `confirmToken` does the same. The acknowledgement is the blast-radius line from `plan-split`. The token is the Run panel HMAC, not a hash of that card.
 - `dispatch-run` with a `runId` that `getRun` does not find returns an error and writes nothing.
 
 The string `"true"` is not the boolean `true`. Treat it as not confirmed unless WP5 documents coercion. This scenario expects no `startRun` call for the string.

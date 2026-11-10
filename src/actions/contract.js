@@ -38,7 +38,7 @@ export const TOOL_DESCRIPTIONS = Object.freeze({
   'plan-split':
     'Other agents call this to save a Conductor plan. Returns {ok,runId,status,steps,recalledMemories}. stepsJson is JSON text of 1-8 objects {title,workerType,input,dependsOn}. dependsOn is step indexes; a cycle is rejected. No Jira writes.',
   'dispatch-run':
-    'Start a saved plan. Requires boolean confirm, acknowledgeBlastRadius, and confirmToken from plan-split. A mismatch leaves the run planning and writes nothing. A repeat does not enqueue again.',
+    'Start a saved plan. confirm must be boolean true. The Run panel issues confirmToken. plan-split does not return it. A mismatch leaves the run planning and writes nothing.',
   'get-run-status':
     'Other agents call this to read a Conductor run. Pass runId, or epicKey for the latest run. Returns {ok,run,steps}. Each step has idx, title, workerType, status, dependsOn, childIssueKey, attempt. waiting means a dependency is not done. Read-only.',
   'recall-memory':
@@ -69,7 +69,7 @@ export const RECORDER_DESCRIPTIONS = Object.freeze({
   'replay-run':
     'Dry-run a saved run against today\'s Jira. Returns {ok,dryRun,duplicateWrites,steps,effects,lessons}. Uses lessons valid at the run createdAt. Names newer lessons in the diff. Writes nothing.',
   'fork-run':
-    'Fork a run from one step. Requires boolean confirm, acknowledgeBlastRadius, and confirmToken. Re-runs steps that depend on stepIdx. A mismatch writes nothing. Prefix effects are not written again.',
+    'Fork from one step. The Run panel issues confirmToken. It is single-use and expiring. A mismatch writes nothing. Prefix effects are not written again.',
 });
 
 /**

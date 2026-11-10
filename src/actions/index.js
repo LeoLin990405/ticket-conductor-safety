@@ -51,10 +51,8 @@ import {
   publicStatusStep,
 } from './contract.js';
 import { planCardFromSteps, previewBlastRadius } from '../blast/preview.js';
-import {
-  confirmationFields,
-  evaluateForkAuthorization,
-} from '../safety/guard.js';
+import { confirmationFields } from '../safety/guard.js';
+import { authorizeFork } from '../safety/grants.js';
 import { applyBlastGate } from '../run/approval.js';
 import { readRunBudget } from '../run/budget.js';
 import {
@@ -374,9 +372,8 @@ export async function planSplit(payload, context, overrides) {
       eta: replan.eta,
       budgetOutlook: replan.budgetOutlook,
     },
-    // Echo these on dispatch-run. They are not stored. The token is the
-    // hash of this card's mutating writes. A later change to the plan is a
-    // new run, so the token does not need a stored copy.
+    // The acknowledgement is the line a person reads. The confirm token is
+    // not on this object. The Run panel mints it.
     ...confirmationFields(blastRadius),
   };
 }
@@ -397,7 +394,6 @@ export async function dispatchRun(payload, _context, overrides) {
   // unless `confirm` is boolean true and the token matches that card.
   const run = await startRun(runId, {
     ...overrides,
-    requireConfirmation: true,
     confirmation: {
       confirm: source.confirm,
       acknowledgeBlastRadius: source.acknowledgeBlastRadius,
@@ -567,7 +563,10 @@ export async function replayRun(payload, _context, overrides) {
 export async function forkRun(payload, context, overrides) {
   const source = payload && typeof payload === 'object' ? payload : {};
   const runId = readString(source, 'runId');
-  const forkDecision = evaluateForkAuthorization(source);
+  const forkDecision = authorizeFork(
+    source,
+    typeof overrides?.now === 'function' ? overrides.now() : Date.now(),
+  );
   if (!forkDecision.ok) {
     return {
       ok: false,

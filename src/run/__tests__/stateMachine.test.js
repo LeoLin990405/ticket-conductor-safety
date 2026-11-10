@@ -13,11 +13,10 @@ import {
   recomputeRunStatus,
   ensureSummarizeStep,
   reportStep,
-  startRun,
 } from '../stateMachine.js';
 import { resetWorkerTypes } from '../../worker/index.js';
 
-import { createHarness } from './harness.js';
+import { createHarness, startApproved } from './harness.js';
 
 test.afterEach(() => {
   resetWorkerTypes();
@@ -31,7 +30,7 @@ test('reportStep moves running -> done and appends exactly one summarize step', 
     { title: 'One', workerType: 'draft-spec', input: {} },
     { title: 'Two', workerType: 'research', input: {} },
   ]);
-  await startRun(run.runId, harness.dependencies);
+  await startApproved(run.runId, harness.dependencies);
 
   const afterFirst = await reportStep(
     first.stepId,
@@ -71,7 +70,7 @@ test('recomputeRunStatus blocks the run when any step failed', async () => {
     { title: 'One', workerType: 'draft-spec', input: {} },
     { title: 'Two', workerType: 'research', input: {} },
   ]);
-  await startRun(run.runId, harness.dependencies);
+  await startApproved(run.runId, harness.dependencies);
 
   await harness.store.updateStep(first.stepId, {
     status: 'failed',
@@ -88,12 +87,12 @@ test('startRun leaves terminal and already-running runs untouched', async () => 
   const [step] = await harness.createSteps(run.runId, [
     { title: 'One', workerType: 'draft-spec', input: {} },
   ]);
-  await startRun(run.runId, harness.dependencies);
+  await startApproved(run.runId, harness.dependencies);
   await harness.store.updateStep(step.stepId, { status: 'done' });
   await harness.store.updateRun(run.runId, { status: 'done' });
 
   const stepEventsBefore = harness.stepEvents.length;
-  const returned = await startRun(run.runId, harness.dependencies);
+  const returned = await startApproved(run.runId, harness.dependencies);
   assert.equal(returned.status, 'done');
   assert.equal(harness.stepEvents.length, stepEventsBefore);
 });
@@ -158,7 +157,7 @@ test('startRun pushes the remaining steps when one step push is refused', async 
       pushed.push(payload);
     },
   };
-  const started = await startRun(run.runId, dependencies);
+  const started = await startApproved(run.runId, dependencies);
   assert.equal(started.status, 'running');
   assert.equal(calls, 2);
   assert.equal(pushed.length, 1);

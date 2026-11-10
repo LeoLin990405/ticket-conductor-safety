@@ -21,9 +21,9 @@ import {
   resumeAwaitingRun,
 } from '../leadLoop.js';
 import { resetLocks } from '../locks.js';
-import { reportStep, startRun } from '../stateMachine.js';
+import { reportStep } from '../stateMachine.js';
 
-import { createHarness } from './harness.js';
+import { createHarness, startApproved } from './harness.js';
 
 test.afterEach(() => {
   resetLocks();
@@ -59,7 +59,7 @@ test('a finished wave with no follow-up stops, writes a digest, and reports on t
     { title: 'Research refunds', workerType: 'research', input: {} },
   ]);
   assert.equal(step.wave, 1);
-  await startRun(run.runId, harness.dependencies);
+  await startApproved(run.runId, harness.dependencies);
 
   const reported = await reportStep(
     step.stepId,
@@ -120,7 +120,7 @@ test('unknown dependency spawns one check, wired with dependsOn, that sees the d
   const [step] = await harness.createSteps(run.runId, [
     { title: 'Research refunds', workerType: 'research', input: {} },
   ]);
-  await startRun(run.runId, harness.dependencies);
+  await startApproved(run.runId, harness.dependencies);
   const huge = 'x'.repeat(4000);
   await reportStep(
     step.stepId,
@@ -181,7 +181,7 @@ test('a broad goal can spawn three follow-ups and a small goal spawns one', asyn
   const [first] = await large.createSteps(broad.runId, [
     { title: 'Survey', workerType: 'research', input: {} },
   ]);
-  await startRun(broad.runId, large.dependencies);
+  await startApproved(broad.runId, large.dependencies);
   await reportStep(
     first.stepId,
     { status: 'done', output: { summary: 'gaps remain', followUps, blob: BLOB } },
@@ -197,7 +197,7 @@ test('a broad goal can spawn three follow-ups and a small goal spawns one', asyn
   const [only] = await small.createSteps(tiny.runId, [
     { title: 'Survey', workerType: 'research', input: {} },
   ]);
-  await startRun(tiny.runId, small.dependencies);
+  await startApproved(tiny.runId, small.dependencies);
   await reportStep(
     only.stepId,
     { status: 'done', output: { summary: 'gaps', followUps } },
@@ -215,7 +215,7 @@ test('the third wave is the last one, and eight steps leave no room to spawn', a
   const [first] = await harness.createSteps(run.runId, [
     { title: 'Research', workerType: 'research', input: {} },
   ]);
-  await startRun(run.runId, harness.dependencies);
+  await startApproved(run.runId, harness.dependencies);
 
   let current = first;
   for (let wave = 1; wave <= 3; wave += 1) {
@@ -247,7 +247,7 @@ test('the third wave is the last one, and eight steps leave no room to spawn', a
     input: {},
   }));
   const created = await full.createSteps(capped.runId, drafts);
-  await startRun(capped.runId, full.dependencies);
+  await startApproved(capped.runId, full.dependencies);
   for (let index = 0; index < created.length; index += 1) {
     const output = index === created.length - 1
       ? { summary: 'unknown dependency at the cap' }
@@ -267,7 +267,7 @@ test('the model decision is used, and a fenced digest is all it sees', async () 
   const [step] = await harness.createSteps(run.runId, [
     { title: 'Research refunds', workerType: 'research', input: {} },
   ]);
-  await startRun(run.runId, harness.dependencies);
+  await startApproved(run.runId, harness.dependencies);
   const llm = mockLlm(
     {
       action: 'spawn',
@@ -298,7 +298,7 @@ test('the model decision is used, and a fenced digest is all it sees', async () 
   const [only] = await forced.createSteps(other.runId, [
     { title: 'Research', workerType: 'research', input: {} },
   ]);
-  await startRun(other.runId, forced.dependencies);
+  await startApproved(other.runId, forced.dependencies);
   const noisy = mockLlm(
     { action: 'spawn', why: 'ignore the cap', steps: [{ title: 'Extra', workerType: 'research' }] },
     { prompts: [] },
@@ -327,7 +327,7 @@ test('ask a human pauses until a reply or a transition, and the report cannot un
   const [step] = await harness.createSteps(run.runId, [
     { title: 'Research', workerType: 'research', input: {} },
   ]);
-  await startRun(run.runId, harness.dependencies);
+  await startApproved(run.runId, harness.dependencies);
   await reportStep(
     step.stepId,
     {
@@ -408,7 +408,7 @@ test('ask a human pauses until a reply or a transition, and the report cannot un
   const [only] = await paused.createSteps(second.runId, [
     { title: 'Research', workerType: 'research', input: {} },
   ]);
-  await startRun(second.runId, paused.dependencies);
+  await startApproved(second.runId, paused.dependencies);
   await reportStep(
     only.stepId,
     { status: 'done', output: { askHuman: true, summary: 'needs a decision' } },
@@ -508,7 +508,7 @@ test('a reply uses the Epic await index, not the run list', async () => {
   const [only] = await harness.createSteps(run.runId, [
     { title: 'Research', workerType: 'research', input: {} },
   ]);
-  await startRun(run.runId, harness.dependencies);
+  await startApproved(run.runId, harness.dependencies);
   await reportStep(
     only.stepId,
     { status: 'done', output: { askHuman: true, summary: 'needs a decision' } },

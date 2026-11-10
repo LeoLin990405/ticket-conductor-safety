@@ -45,11 +45,11 @@ Success:
 
 ## dispatch-run
 
-Inputs: `runId`, `confirm` (boolean `true`), `acknowledgeBlastRadius` (the `acknowledgement` string from `plan-split`), `confirmToken` (the `confirmToken` string from `plan-split`).
+Inputs: `runId`, `confirm` (boolean `true`), `acknowledgeBlastRadius` (the `acknowledgement` string from `plan-split`), `confirmToken` (the HMAC the Run panel mints). `plan-split` does not return `confirmToken`. An agent that only sees the tool result cannot fill this field.
 
-Success: `{ "ok": true, "runId": "uuid", "status": "running" }`.
+Success: `{ "ok": true, "runId": "uuid", "status": "running" }`. The Run panel's Approve button is what produces that success. It does not show the token.
 
-`plan-split` also returns `acknowledgement` and `confirmToken`. They are not stored. A call with `confirm` omitted, `confirm` set to the string `"true"`, the wrong acknowledgement, or the wrong token returns `{ "ok": false, "code": "CONFIRMATION_REQUIRED", "status": "planning" }` and enqueues nothing. A call whose run is already past the wall-clock or step budget returns `{ "ok": false, "code": "BUDGET_EXCEEDED" }`.
+`plan-split` also returns `acknowledgement`. It does not return `confirmToken`. Neither value is stored on the run. A call with `confirm` omitted, `confirm` set to the string `"true"`, the wrong acknowledgement, a public card digest, a reused token, or an expired token returns `{ "ok": false, "code": "CONFIRMATION_REQUIRED", "status": "planning" }` and enqueues nothing. A call whose run is already past the wall-clock or step budget returns `{ "ok": false, "code": "BUDGET_EXCEEDED" }` and pending forward effects are cancelled.
 
 A second call with the same `runId`, after the run has left `planning`, returns the current status and does not enqueue another copy of the steps.
 

@@ -13,9 +13,9 @@ import { resetStore, setStore } from '../../store/index.js';
 import { resetWorkerTypes, stepWorkerHandler } from '../../worker/index.js';
 import { resetLocks } from '../locks.js';
 import { approveGate } from '../approval.js';
-import { reportStep, startRun } from '../stateMachine.js';
+import { reportStep } from '../stateMachine.js';
 
-import { createHarness } from './harness.js';
+import { createHarness, startApproved } from './harness.js';
 
 test.afterEach(() => {
   resetWorkerTypes();
@@ -32,7 +32,7 @@ test('a sibling runs while the gate and its dependent stay waiting', async () =>
     { title: 'Draft the refund spec', workerType: 'draft-spec', input: 'spec', dependsOn: [1] },
   ]);
 
-  await startRun(run.runId, harness.dependencies);
+  await startApproved(run.runId, harness.dependencies);
 
   assert.deepEqual(
     harness.stepEvents.map((event) => event.stepId),

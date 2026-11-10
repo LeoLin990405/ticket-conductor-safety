@@ -53,9 +53,11 @@ test('planned request keys match requestKeyFor for the kinds the queue accepts',
     'createIssue',
     'comment',
     'transition',
+    'setFields',
     'closeIssue',
     'recordRemovedComment',
     'restoreStatus',
+    'restoreFields',
   ]) {
     const input = {
       runId: 'run-1',
@@ -78,14 +80,19 @@ test('planned request keys match requestKeyFor for the kinds the queue accepts',
       discriminator: 'memory:epic-comment',
     }),
   );
-  assert.throws(
-    () => requestKeyFor({
+  assert.equal(
+    plannedRequestKey({
       runId: 'run-1',
       stepId: 'step-1',
       kind: 'setFields',
       discriminator: 'fields:summary',
     }),
-    { name: 'EffectValidationError' },
+    requestKeyFor({
+      runId: 'run-1',
+      stepId: 'step-1',
+      kind: 'setFields',
+      discriminator: 'fields:summary',
+    }),
   );
 });
 

@@ -478,6 +478,7 @@ function App() {
   const [forkInput, setForkInput] = useState('');
   const [forking, setForking] = useState(false);
   const [trace, setTrace] = useState('');
+  const [approving, setApproving] = useState(false);
 
   const load = useCallback(async (key, preferRunId) => {
     const listed = await invoke('getRunsForIssue', { issueKey: key });
@@ -584,6 +585,26 @@ function App() {
       setError(retryError instanceof Error ? retryError.message : String(retryError));
     } finally {
       setRetrying('');
+    }
+  }
+
+  async function onApprove() {
+    const runId = detail?.run?.runId;
+    if (!runId) {
+      return;
+    }
+    setApproving(true);
+    setError('');
+    try {
+      const result = await invoke('approveRun', { runId });
+      if (result && result.ok === false) {
+        setError(result.error || 'Approval did not start the run');
+      }
+      await load(issueKey, runId);
+    } catch (approveError) {
+      setError(approveError instanceof Error ? approveError.message : String(approveError));
+    } finally {
+      setApproving(false);
     }
   }
 
@@ -694,6 +715,20 @@ function App() {
         <TabPanel>
           <Stack space="space.200">
             <BlastRadius blast={detail?.blast} />
+            {run?.status === 'planning' ? (
+              <Stack space="space.100">
+                <SectionMessage appearance="warning" title="This plan has not started">
+                  <Text>
+                    {detail?.blast?.summary
+                      ? `${detail.blast.summary}. Approve here to start. The chat does not receive the confirmation token.`
+                      : 'Approve here to start. The chat does not receive the confirmation token.'}
+                  </Text>
+                </SectionMessage>
+                <Button appearance="primary" isDisabled={approving} onClick={onApprove}>
+                  {approving ? 'Starting' : 'Approve and start'}
+                </Button>
+              </Stack>
+            ) : null}
             {detail?.planCard ? (
               <SectionMessage appearance="information" title="Plan card">
                 <Text>{detail.planCard}</Text>

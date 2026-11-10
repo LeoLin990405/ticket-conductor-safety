@@ -2,8 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { resetLocks } from '../../run/locks.js';
-import { startRun } from '../../run/stateMachine.js';
-import { createHarness } from '../../run/__tests__/harness.js';
+import { createHarness, startApproved } from '../../run/__tests__/harness.js';
 import { createMemoryStore, resetStore, setStore } from '../../store/index.js';
 import { resetWorkerTypes } from '../../worker/index.js';
 import { childIssueUpdated } from '../childIssueUpdated.js';
@@ -63,7 +62,7 @@ test('transitioning an approval gate child to Done approves it once', async () =
     { title: 'Approve the refund spec', workerType: 'approval', input: {}, dependsOn: [] },
     { title: 'Draft the refund spec', workerType: 'draft-spec', input: 'spec', dependsOn: [0] },
   ]);
-  await startRun(run.runId, harness.dependencies);
+  await startApproved(run.runId, harness.dependencies);
   const gate = await harness.store.getStep(steps[0].stepId);
   const draftBefore = await harness.store.getStep(steps[1].stepId);
   assert.equal(gate.status, 'waiting');
@@ -118,7 +117,7 @@ test('a Closed transition uses the same approval path', async () => {
   const [gate] = await harness.createSteps(run.runId, [
     { title: 'Approve blast radius', workerType: 'approval', input: {}, dependsOn: [] },
   ]);
-  await startRun(run.runId, harness.dependencies);
+  await startApproved(run.runId, harness.dependencies);
   const stored = await harness.store.getStep(gate.stepId);
   const result = await childIssueUpdated({
     eventType: 'avi:jira:updated:issue',
@@ -143,7 +142,7 @@ test('a non-done transition and a failed gate do not approve', async () => {
     { title: 'Approve the refund spec', workerType: 'approval', input: {}, dependsOn: [] },
     { title: 'Approve a blocked change', workerType: 'approval', input: {}, dependsOn: [] },
   ]);
-  await startRun(run.runId, harness.dependencies);
+  await startApproved(run.runId, harness.dependencies);
   const waiting = await harness.store.getStep(gate.stepId);
   const blocked = await harness.store.getStep(failed.stepId);
   await harness.store.updateStep(blocked.stepId, { status: 'failed' });

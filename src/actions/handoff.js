@@ -9,12 +9,12 @@
  *
  * 1. `recall-memory` (read-only) so the plan can follow a stored decision.
  * 2. `plan-split` stores the run at status `planning` and returns
- *    `acknowledgement` and `confirmToken`. No Jira write.
+ *    `acknowledgement`. It does not return `confirmToken`. No Jira write.
  *
- * A `confirm` flag on this same call is ignored. The token did not exist
- * until `plan-split` returned, so the caller cannot have echoed it yet.
- * The caller passes those two strings to `dispatch-run`. Rovo may still
- * show its own card for that UPDATE action. The card is not the check.
+ * A `confirm` flag on this same call is ignored. This function does not
+ * receive a token, and it does not mint one. The person approves on the
+ * Run panel. Rovo may still show its own card for `dispatch-run`. The
+ * card is not the check.
  *
  * Nothing in this file calls Jira. `overrides` is the dependency bag the
  * caller will pass to the later `dispatch-run`.
@@ -163,11 +163,9 @@ export async function handoffGoal(input, context, overrides) {
     };
   }
 
-  // 3. Do not dispatch from this function. The token was just created, so
-  // the caller cannot have echoed it yet. A `confirm` flag on this same
-  // call is ignored. The caller passes the token to `dispatch-run`.
-  // `overrides` is accepted so a test can pass the same dependency bag it
-  // will hand to that later `dispatch-run`.
+  // 3. Do not dispatch from this function. plan-split did not return a
+  // token, so this call cannot start the run. A `confirm` flag on this
+  // same call is ignored. The person approves on the Run panel.
   void overrides;
   return {
     ok: true,
@@ -175,7 +173,6 @@ export async function handoffGoal(input, context, overrides) {
     stage: 'plan-split',
     runId: planned.runId,
     status: 'planning',
-    confirmToken: planned.confirmToken,
     acknowledgement: planned.acknowledgement,
     blastRadius: planned.blastRadius,
     calls,

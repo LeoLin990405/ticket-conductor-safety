@@ -25,6 +25,7 @@
 
 import { ensureSummarizeStep, startRun } from '../run/stateMachine.js';
 import { resolveDependencies } from '../run/dependencies.js';
+import { issueHumanConfirmation } from '../safety/grants.js';
 import { NotFoundError, StoreValidationError } from '../store/index.js';
 import { selectForkSets } from './graph.js';
 import { recordEvent } from './log.js';
@@ -241,9 +242,41 @@ export async function forkRun(input, overrides = {}) {
   const pending = fresh.some((step) => step.status !== 'done');
   let started;
   if (pending) {
-    // startRun enqueues createIssue and step-queue only for steps that are
-    // not already done, so the copied prefix does not write to Jira.
-    started = await startRun(forked.runId, overrides);
+    // The fork action already checked the human fork grant. startRun still
+    // requires a dispatch grant for the new run. Mint it here and do not
+    // put it on the return value. The agent result never sees it.
+    const issued = await issueHumanConfirmation({
+      runId: forked.runId,
+      store,
+      now: dependencies.now,
+      principal: 'fork',
+    });
+    if (!issued.ok) {
+      return {
+        ok: false,
+        code: issued.code,
+        error: issued.reason,
+        runId: forked.runId,
+        status: 'planning',
+      };
+    }
+    started = await startRun(forked.runId, {
+      ...overrides,
+      confirmation: {
+        confirm: true,
+        acknowledgeBlastRadius: issued.acknowledgement,
+        confirmToken: issued.confirmToken,
+      },
+    });
+    if (started?.refusedConfirmation) {
+      return {
+        ok: false,
+        code: started.refusedConfirmation.code,
+        error: started.refusedConfirmation.reason,
+        runId: forked.runId,
+        status: started.status,
+      };
+    }
   } else {
     started = await store.updateRun(forked.runId, { status: 'done' });
     await ensureSummarizeStep(

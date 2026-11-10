@@ -7,6 +7,7 @@ import { createMemoryStore, resetStore, setStore } from '../../store/index.js';
 import { resetWorkerTypes } from '../../worker/index.js';
 import { dispatchRun } from '../index.js';
 import { handoffGoal } from '../handoff.js';
+import { issueHumanConfirmation } from '../../safety/grants.js';
 
 const repoRoot = fileURLToPath(new URL('../../../', import.meta.url));
 
@@ -39,6 +40,7 @@ test('handoffGoal does not dispatch until the caller echoes the token', async ()
     assert.equal(waiting.ok, true);
     assert.equal(waiting.awaitingConfirmation, true);
     assert.equal(waiting.status, 'planning');
+    assert.equal(waiting.confirmToken, undefined);
     assert.deepEqual(waiting.calls.map((call) => call.tool), ['recall-memory', 'plan-split']);
     assert.equal((await store.getRun(waiting.runId)).status, 'planning');
 
@@ -51,7 +53,7 @@ test('handoffGoal does not dispatch until the caller echoes the token', async ()
       ]),
       confirm: true,
       acknowledgeBlastRadius: waiting.acknowledgement,
-      confirmToken: waiting.confirmToken,
+      confirmToken: 'v2.' + 'ab'.repeat(16) + '.' + 'cd'.repeat(32),
     }, { principal: { accountId: 'other-agent' } }, queueStubs(store));
     assert.equal(again.awaitingConfirmation, true);
     assert.notEqual(again.runId, waiting.runId);
@@ -83,11 +85,17 @@ test('handoffGoal recalls, plans, dispatches, and reads status when the token ma
     assert.equal(planned.awaitingConfirmation, true);
     assert.equal(planned.calls[0].result.memories[0].memType, 'decision');
     assert.equal(planned.calls[0].result.memories[0].sourceIssue, 'PAY-9');
+    const issued = await issueHumanConfirmation({
+      runId: planned.runId,
+      store,
+      now: () => 1_700_000_000_000,
+      principal: 'person',
+    });
     const result = await dispatchRun({
       runId: planned.runId,
       confirm: true,
-      acknowledgeBlastRadius: planned.acknowledgement,
-      confirmToken: planned.confirmToken,
+      acknowledgeBlastRadius: issued.acknowledgement,
+      confirmToken: issued.confirmToken,
     }, { principal: { accountId: 'other-agent' } }, queueStubs(store));
 
     assert.equal(result.ok, true);
