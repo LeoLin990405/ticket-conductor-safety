@@ -14,7 +14,7 @@ The check is `src/__tests__/architectureFreeze.test.js`. It reads `manifest.yml`
 
 `CONDUCTOR_LLM` stays `off` except the M5 recording window. November does not run live Jira or Rovo. No deploy to staging or production. The app id stays `ari:cloud:ecosystem::app/00000000-0000-4000-8000-0000000000a1`.
 
-A new entity, attribute, index, scope, queue, action, or module waits until after Codegeist. So does a new effect kind, event kind, or step status. Forge also refuses to delete an attribute that has already shipped, so the lists below are append-only in production even after the contest. `run.summarizeQueued` is unused and stays.
+A new entity, index, scope, queue, action, or module waits until after Codegeist. So does a new effect kind, event kind, or step status. `run.grants` is the exception: it is the shared used-token table, and this snapshot moved with it. Forge also refuses to delete an attribute that has already shipped, so the lists below are append-only in production even after the contest. `run.summarizeQueued` is unused and stays.
 
 Keys are not attributes. Writing `runId` on a run, `stepId` on a step, `requestKey` on an effect, `memId` on a memory, or an event id is an undeclared field and Forge returns 422. The event key is `${runId}#${seq}`.
 
@@ -116,12 +116,15 @@ Five entities. Attribute types are the manifest types. Indexes are partition, th
 | `reviewedThroughWave` | integer |
 | `ledger` | any |
 | `budget` | any |
+| `grants` | any |
 
 Indexes: `by-epic` (`epicKey`, `createdAt`), `by-status` (`status`, `updatedAt`).
 
 `budget` holds the caps and the counters in one value: `maxSteps` 8, `maxModelCalls` 28 (8 steps × 3 attempts + 3 lead waves + summarize), `wallClockMs` 5,760,000 (8 × 12 minutes), `usedSteps`, `usedModelCalls`, `usedTokens`, `elapsedMs`, `startedAt`. Optional `chaos` is `{injected, healed, duplicateWrites}`, written only while the fault gate is open and a counter moves. Optional `effects` is `{deduped}`, flushed only when a budget write is already happening. `applied` and `retried` are counted from effect rows at read time and are not stored.
 
 `ledger` holds `{digests, lastDecision, resume}`. Each digest is at most 1024 UTF-8 bytes.
+
+`grants` is the shared used-token table. It is omitted until the Run panel writes a grant, so a run that never shares one stays the same size. Each entry is `{kind, binding, acknowledgement, expiresAt, used, principal}` under a 32-hex grant id. The token is not stored. At most 16 entries. A second instance compare-and-sets `used`. A store error refuses the token.
 
 `reviewedThroughWave` is the integer the lead compare-and-swaps. It is not a float.
 

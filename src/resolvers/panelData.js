@@ -132,8 +132,15 @@ export async function loadRun(runId) {
   // Same effect rows and the same run row this load already fetched.
   // Counting them does not query KVS again and does not write.
   const effectMetrics = combineEffectMetrics(effects, run.budget, runId);
+  const visibleRun = run && Object.hasOwn(run, 'grants')
+    ? (() => {
+      const copy = { ...run };
+      delete copy.grants;
+      return copy;
+    })()
+    : run;
   return {
-    run,
+    run: visibleRun,
     steps,
     effects,
     ...memoryView,

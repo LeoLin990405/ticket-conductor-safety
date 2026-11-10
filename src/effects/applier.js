@@ -453,18 +453,32 @@ async function recordChildIssueKey(store, effect, result, logger) {
  */
 async function handleFailure(input) {
   const { store, queue, logger, effect, attempt, error, now } = input;
-  const terminal = attempt >= MAX_EFFECT_TRIES;
+  // A timeout or a write that already reached Jira and then threw is not
+  // safe to retry: a second call can create or transition twice. The row
+  // fails closed. A clean error before any write still retries.
+  const unsafeRetry = Boolean(
+    error &&
+    typeof error === 'object' &&
+    (error.partial === true || error.code === 'EFFECT_TIMEOUT'),
+  );
+  const terminal = attempt >= MAX_EFFECT_TRIES || unsafeRetry;
   const status = terminal ? 'failed' : 'retrying';
   const serialized = serializeError(error);
+  /** @type {Record<string, unknown>} */
+  const patch = { status, tries: attempt };
+  if (unsafeRetry) {
+    patch.result = {
+      partial: error.partial === true,
+      code: typeof error.code === 'string' ? error.code : 'PARTIAL_APPLY',
+      message: serialized.message,
+    };
+  }
 
   let updated;
   try {
     updated = await store.updateEffect(
       effect.requestKey,
-      {
-        status,
-        tries: attempt,
-      },
+      patch,
       { expectedStatus: 'applying' },
     );
   } catch (storeError) {
@@ -509,6 +523,47 @@ async function handleFailure(input) {
     });
   }
   return updated;
+}
+
+/**
+ * Race a Jira apply against a caller-supplied deadline.
+ *
+ * No deadline means the call is unchanged. On expiry the error is
+ * `EFFECT_TIMEOUT` and `partial`, because the HTTP call is not aborted and
+ * a retry could write twice. A later resolution of the original call is
+ * ignored.
+ *
+ * @param {() => Promise<any>} work
+ * @param {unknown} timeoutMs
+ * @returns {Promise<any>}
+ */
+function applyBounded(work, timeoutMs) {
+  if (!Number.isInteger(timeoutMs) || timeoutMs < 1) return work();
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      const error = new Error(`Jira call exceeded ${timeoutMs}ms`);
+      error.code = 'EFFECT_TIMEOUT';
+      error.partial = true;
+      reject(error);
+    }, timeoutMs);
+    work().then(
+      (value) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
 }
 
 /**
@@ -772,9 +827,12 @@ export function createEffectApplier(deps = {}) {
       }
 
       try {
-        let result = await applyJiraEffect(
-          toApply ? { ...claimed, payload: toApply } : claimed,
-          { requestJira },
+        let result = await applyBounded(
+          () => applyJiraEffect(
+            toApply ? { ...claimed, payload: toApply } : claimed,
+            { requestJira },
+          ),
+          deps.applyTimeoutMs,
         );
         // A deferred child comment stores `childOfStepId` and learns the
         // issue key only at apply time. Keep that key on the result so undo

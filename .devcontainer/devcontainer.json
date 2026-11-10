@@ -1,0 +1,15 @@
+{
+  "name": "ticket-conductor-safety",
+  "build": {
+    "dockerfile": "../Dockerfile",
+    "context": ".."
+  },
+  "postCreateCommand": "npm ci && npm run safety-eval && npm run demo:offline",
+  "customizations": {
+    "vscode": {
+      "settings": {
+        "terminal.integrated.defaultProfile.linux": "bash"
+      }
+    }
+  }
+}

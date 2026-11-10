@@ -6,12 +6,18 @@
  * mints one. The token is an HMAC of the blast-radius binding under a
  * server secret, it expires, and the first successful check consumes it.
  *
- * The grant table is process-local. The panel mints and consumes the token
- * in the same invocation, so a later agent call cannot read it back. A
- * token presented in another instance fails closed because that instance
- * has no row. Set `CONDUCTOR_CONFIRM_SECRET` (16 characters or more) so
- * every instance of one install uses the same key. When it is unset, the
- * process generates a random key and does not export it.
+ * The panel mints the token and does not return it. `shareGrant` writes
+ * the row onto `run.grants` in the Custom Entity Store. Every instance
+ * reads that row. The first successful check compare-and-sets `used` to
+ * true. A second instance, or a replay after a restart, sees the same
+ * row. If the store read or write throws, the check refuses. It does not
+ * fall back to a memory-only accept once the grant was shared.
+ *
+ * A grant that was never shared stays in this process. Tests that mint a
+ * token and consume it here do not write `run.grants`. Set
+ * `CONDUCTOR_CONFIRM_SECRET` (16 characters or more) so every instance of
+ * one install uses the same HMAC key. When it is unset, the process
+ * generates a random key and does not export it.
  *
  * @module safety/grants
  */
@@ -19,6 +25,7 @@
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 
 import { planCardFromSteps, previewBlastRadius } from '../blast/preview.js';
+import { getStore } from '../store/index.js';
 import {
   acknowledgementText,
   confirmationToken,
@@ -45,6 +52,7 @@ const grants = new Map();
  * @property {number} expiresAt
  * @property {boolean} used
  * @property {string} principal
+ * @property {boolean} [shared] True after the row is on `run.grants`.
  */
 
 /**
@@ -245,7 +253,171 @@ export async function issueHumanConfirmation(input) {
     steps,
     planCard: planCardFromSteps(steps),
   });
-  return issueDispatchGrant(card, { now: input.now, principal: input.principal });
+  const minted = issueDispatchGrant(card, { now: input.now, principal: input.principal });
+  if (!input?.share) return minted;
+  const shared = await shareGrant(store, runId, minted);
+  if (!shared.ok) {
+    return { ok: false, code: 'CONFIRMATION_REQUIRED', reason: shared.reason };
+  }
+  return minted;
+}
+
+/** How many grant rows one run may hold. @constant {number} */
+const MAX_SHARED_GRANTS = 16;
+
+/**
+ * @param {string} reason
+ * @returns {{ok: false, code: 'CONFIRMATION_REQUIRED', reason: string}}
+ */
+function refuse(reason) {
+  return { ok: false, code: 'CONFIRMATION_REQUIRED', reason };
+}
+
+/**
+ * Write one minted grant onto `run.grants`. The token is not stored.
+ * A failed write deletes the in-memory row so the token cannot be used.
+ *
+ * @param {{getRun: Function, updateRun: Function}|null|undefined} store
+ * @param {string} runId
+ * @param {{confirmationId?: string}} issued
+ * @returns {Promise<{ok: true}|{ok: false, reason: string}>}
+ */
+export async function shareGrant(store, runId, issued) {
+  const id = issued?.confirmationId;
+  const grant = typeof id === 'string' ? grants.get(id) : undefined;
+  if (
+    !grant
+    || !store
+    || typeof store.getRun !== 'function'
+    || typeof store.updateRun !== 'function'
+    || typeof runId !== 'string'
+    || runId.length === 0
+  ) {
+    if (typeof id === 'string') grants.delete(id);
+    return { ok: false, reason: 'grant store unavailable' };
+  }
+  const record = {
+    kind: grant.kind,
+    binding: grant.binding,
+    acknowledgement: grant.acknowledgement,
+    expiresAt: grant.expiresAt,
+    used: false,
+    principal: grant.principal,
+  };
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    let run;
+    try {
+      run = await store.getRun(runId);
+    } catch {
+      grants.delete(id);
+      return { ok: false, reason: 'grant store unavailable' };
+    }
+    if (!run) {
+      grants.delete(id);
+      return { ok: false, reason: 'grant store unavailable' };
+    }
+    const existing = run.grants && typeof run.grants === 'object' && !Array.isArray(run.grants)
+      ? run.grants
+      : {};
+    if (Object.keys(existing).length >= MAX_SHARED_GRANTS && !existing[id]) {
+      grants.delete(id);
+      return { ok: false, reason: 'grant store unavailable' };
+    }
+    try {
+      await store.updateRun(runId, {
+        grants: { ...existing, [id]: record },
+      }, { expectedUpdatedAt: run.updatedAt });
+      grant.shared = true;
+      return { ok: true };
+    } catch (error) {
+      if (error?.name === 'ConflictError' || error?.code === 'CONFLICT') continue;
+      grants.delete(id);
+      return { ok: false, reason: 'grant store unavailable' };
+    }
+  }
+  grants.delete(id);
+  return { ok: false, reason: 'grant store unavailable' };
+}
+
+/**
+ * @param {{getRun: Function, updateRun: Function}} store
+ * @param {string} runId
+ * @param {string} id
+ * @returns {Promise<{ok: true}|{ok: false, code: string, reason: string}>}
+ */
+async function markGrantUsed(store, runId, id) {
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    let run;
+    try {
+      run = await store.getRun(runId);
+    } catch {
+      return refuse('grant store unavailable');
+    }
+    const row = run?.grants?.[id];
+    if (!row || typeof row !== 'object') {
+      return refuse('confirmToken does not match this blast radius');
+    }
+    if (row.used === true) {
+      return refuse('confirmToken was already used');
+    }
+    try {
+      await store.updateRun(runId, {
+        grants: { ...run.grants, [id]: { ...row, used: true } },
+      }, { expectedUpdatedAt: run.updatedAt });
+      return { ok: true };
+    } catch (error) {
+      if (error?.name === 'ConflictError' || error?.code === 'CONFLICT') continue;
+      return refuse('grant store unavailable');
+    }
+  }
+  return refuse('grant store unavailable');
+}
+
+/**
+ * @param {{getRun: Function, updateRun: Function}} store
+ * @param {{runId?: string, grants?: object}} run
+ * @param {{id: string, mac: string}} parsed
+ * @param {{kind: 'dispatch'|'fork', binding: string, acknowledgement: string, now: number}} expected
+ * @returns {Promise<{ok: true, code: 'CONFIRMED'}|{ok: false, code: string, reason: string}>}
+ */
+async function consumeStored(store, run, parsed, expected) {
+  const row = run?.grants?.[parsed.id];
+  if (!row || typeof row !== 'object' || row.kind !== expected.kind) {
+    return refuse('confirmToken does not match this blast radius');
+  }
+  if (row.used === true) return refuse('confirmToken was already used');
+  if (expected.now >= row.expiresAt) return refuse('confirmToken has expired');
+  if (row.binding !== expected.binding) {
+    return refuse('confirmToken does not match this blast radius');
+  }
+  if (row.acknowledgement !== expected.acknowledgement) {
+    return refuse('acknowledgeBlastRadius must match the blast-radius card');
+  }
+  const material = [parsed.id, String(row.expiresAt), row.binding].join('\n');
+  if (!sameMac(parsed.mac, mac(material))) {
+    return refuse('confirmToken does not match this blast radius');
+  }
+  const runId = typeof run.runId === 'string' ? run.runId : '';
+  const wrote = await markGrantUsed(store, runId, parsed.id);
+  if (!wrote.ok) return wrote;
+  const local = grants.get(parsed.id);
+  if (local) local.used = true;
+  return { ok: true, code: 'CONFIRMED' };
+}
+
+/**
+ * @param {object|null|undefined} store
+ * @returns {object|null}
+ */
+function storeOrInstalled(store) {
+  if (store && typeof store.getRun === 'function' && typeof store.updateRun === 'function') {
+    return store;
+  }
+  try {
+    return getStore();
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -334,6 +506,45 @@ export function authorizeDispatch(payload, card, now) {
 }
 
 /**
+ * Dispatch check that consults `run.grants` when this token was shared.
+ * A shared row that cannot be marked used refuses the call. An unshared
+ * in-memory grant keeps the process-local check and does not read the store.
+ *
+ * @param {object|null|undefined} payload
+ * @param {object|null|undefined} card
+ * @param {number|(() => number)} [now]
+ * @param {object|null|undefined} [store]
+ * @param {object|null|undefined} [knownRun] Run already loaded by the caller.
+ * @returns {Promise<{ok: true, code: 'CONFIRMED'}|{ok: false, code: string, reason: string}>}
+ */
+export async function authorizeDispatchShared(payload, card, now, store, knownRun) {
+  if (!payload || payload.confirm !== true) {
+    return refuse('confirm must be the boolean true');
+  }
+  const acknowledgement = acknowledgementText(card);
+  if (payload.acknowledgeBlastRadius !== acknowledgement) {
+    return refuse('acknowledgeBlastRadius must match the blast-radius card');
+  }
+  const parsed = parseToken(payload.confirmToken);
+  if (!parsed) return refuse('confirmToken does not match this blast radius');
+  const local = grants.get(parsed.id);
+  const row = knownRun?.grants?.[parsed.id];
+  if (row || local?.shared) {
+    const source = storeOrInstalled(store);
+    if (!row || !source || typeof knownRun?.runId !== 'string') {
+      return refuse('grant store unavailable');
+    }
+    return consumeStored(source, knownRun, parsed, {
+      kind: 'dispatch',
+      binding: dispatchBinding(card),
+      acknowledgement,
+      now: readNow(now),
+    });
+  }
+  return authorizeDispatch(payload, card, now);
+}
+
+/**
  * @param {object|null|undefined} payload
  * @param {number|(() => number)} [now]
  * @returns {{ok: true, code: 'CONFIRMED'}|{ok: false, code: string, reason: string}}
@@ -356,6 +567,50 @@ export function authorizeFork(payload, now) {
     };
   }
   return consume(payload.confirmToken, {
+    kind: 'fork',
+    binding: forkBinding(runId, payload.stepIdx, payload.input),
+    acknowledgement,
+    now: readNow(now),
+  });
+}
+
+/**
+ * Fork check. A shared grant is consumed from `run.grants`. A missing
+ * store row refuses. An unshared in-memory grant does not read the store.
+ *
+ * @param {object|null|undefined} payload
+ * @param {number|(() => number)} [now]
+ * @param {object|null|undefined} [store]
+ * @returns {Promise<{ok: true, code: 'CONFIRMED'}|{ok: false, code: string, reason: string}>}
+ */
+export async function authorizeForkShared(payload, now, store) {
+  if (!payload || payload.confirm !== true) {
+    return refuse('confirm must be the boolean true');
+  }
+  const runId = typeof payload.runId === 'string' ? payload.runId.trim() : '';
+  const acknowledgement = forkAcknowledgement(runId, payload.stepIdx);
+  if (payload.acknowledgeBlastRadius !== acknowledgement) {
+    return refuse('acknowledgeBlastRadius must match the fork card');
+  }
+  const parsed = parseToken(payload.confirmToken);
+  if (!parsed) return refuse('confirmToken does not match this blast radius');
+  const local = grants.get(parsed.id);
+  if (local && !local.shared) return authorizeFork(payload, now);
+  const source = storeOrInstalled(store);
+  if (!source) {
+    return local ? refuse('grant store unavailable') : authorizeFork(payload, now);
+  }
+  let run;
+  try {
+    run = await source.getRun(runId);
+  } catch {
+    return refuse('grant store unavailable');
+  }
+  const row = run?.grants?.[parsed.id];
+  if (!row) {
+    return local ? refuse('grant store unavailable') : authorizeFork(payload, now);
+  }
+  return consumeStored(source, run, parsed, {
     kind: 'fork',
     binding: forkBinding(runId, payload.stepIdx, payload.input),
     acknowledgement,
@@ -391,6 +646,7 @@ export async function approveFromPanel(input) {
     store: input?.store,
     now: input?.now,
     principal: accountId,
+    share: true,
   });
   if (!issued.ok) {
     return { ok: false, code: issued.code, error: issued.reason };

@@ -254,11 +254,11 @@ test('getRunStatus returns the latest run for an epic', async () => {
     await planSplit({
       epicKey: 'PAY-1',
       projectKey: 'PAY',
-      goal: 'First',
+      goal: 'Ship the first refund',
       steps: [{ title: 'Research', workerType: 'research', input: '' }],
     });
     const status = await getRunStatus({ epicKey: 'PAY-1' });
-    assert.equal(status.run.goal, 'First');
+    assert.equal(status.run.goal, 'Ship the first refund');
     assert.equal(status.steps[0].title, 'Research');
     assert.equal(status.steps[0].attempt, 0);
     assert.equal(status.steps[0].input, undefined);

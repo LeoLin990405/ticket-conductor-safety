@@ -9,6 +9,7 @@ export const ENTITY_ATTRIBUTES = Object.freeze({
     "forkedFromRunId",
     "forkedFromStepIdx",
     "goal",
+    "grants",
     "ledger",
     "projectKey",
     "reviewedThroughWave",

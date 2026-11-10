@@ -37,6 +37,7 @@ import { confirmationToken } from './guard.js';
 import { createMemoryStore, resetStore, setStore } from '../store/index.js';
 import { resetWorkerTypes } from '../worker/index.js';
 import { completeText } from '../worker/llm.js';
+import { runFailureScenarios } from './failures.js';
 
 const root = new URL('../../', import.meta.url);
 
@@ -429,6 +430,8 @@ export async function runSafetyEval() {
       assert(router.includes('does not return one'), 'omitted');
       assert(!router.includes('returned `confirmToken`'), 'copied token');
     }));
+
+    rows.push(...await runFailureScenarios());
 
     rows.push(await check('undo deletes comments, never issues', async () => {
       const jira = readFileSync(new URL('src/effects/jira.js', root), 'utf8');

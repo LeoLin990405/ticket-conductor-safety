@@ -104,45 +104,56 @@ loader and briefs, and `frontend/` plus `resolvers/` the UI Kit Run panel.
 The design rationale is in [`docs/DESIGN.md`](docs/DESIGN.md); the super-agent mapping is in
 [`docs/superagent-architecture.md`](docs/superagent-architecture.md).
 
-## 🛡️ Safety mechanisms and how to test them
+## 🛡️ Safety
 
-Every Jira write goes through a gated, deduplicated path, and the effect of a plan is previewed before it runs.
+The irreversible action is a Jira write the app cannot take back cleanly: creating an issue, transitioning an issue, or setting a scalar field. There is no delete-issue scope. Undo closes a child and labels it `conductor-rolled-back`, restores a status only while the issue is still where the run left it, and restores scalar fields only while they still hold what the run wrote.
+
+The model has seven actions and cannot write to Jira. `plan-split` stores a run as `planning` and does not return a token. The Run panel mints a single-use HMAC, writes the used-grant row onto `run.grants`, and consumes it in that invocation. `startRun` checks the grant on every path. A vague goal, a missing epic or step list, a malformed argument, a forged or expired or replayed grant, and a store error all stop before Jira. A timed-out or half-applied effect fails closed so a second delivery does not call Jira again. A budget stop drains queued forward effects.
+
+On Node v22.23.4, in this workspace:
+
+| Command | Result |
+|---|---|
+| `npm test` | 366 pass, 1 skipped, 0 fail |
+| `npm run safety-eval` | 37 pass, 0 fail |
+| `npm run demo:offline` | baseline 6 irreversible mock-Jira writes, guarded 0 (6 of 6 blocked) |
+| `npm audit` | 0 vulnerabilities |
+
+The 18-row failure matrix is inside that eval. `docs/failure-matrix.md` maps each class to a scenario id. `docs/evidence/safety-eval.json` is the machine-readable record. The baseline is a scripted agent with a raw mock Jira client. It is not a live model. `docs/threat-model.md` lists assets, actors, the model/panel/server boundary, and a short SAIF map.
+
+The mock is this repo's REST model. A timeout fails the effect row and leaves the HTTP call running. The panel account id is the Forge resolver context, with no second factor. Full limits are in [`docs/drawerrr-submission.md`](docs/drawerrr-submission.md).
 
 | Mechanism | Where to read it |
 |---|---|
 | Blast-radius preview and compensating undo | [`docs/blast-radius.md`](docs/blast-radius.md), `src/blast/preview.js` |
-| Confirmation token checked before `dispatch-run` writes | `src/safety/guard.js`, `prompts/router.md` |
-| Gated children created only after approval | `stepIdsBlockedByOpenApproval` in `src/run/approval.js` |
-| Step, model-call, and wall-clock hard stop | `runBudgetStop` in `src/run/budget.js` |
-| Architecture freeze (scope, queues, effects, storage shape) | [`docs/freeze.md`](docs/freeze.md) |
-| Human approval gate for risky runs | `src/run/approval.js` |
-| Panel HMAC confirmation (single-use, expiring, not in the tool result) | `src/safety/grants.js`, `src/resolvers/index.js` |
-| Budget stop drains pending forward effects | `src/run/budget.js` |
-| Deduplicated Jira writes via `requestKey` | `src/effects/requestKey.js` |
-| End-to-end simulated scenarios | `tests/simulation/scenarios.test.mjs` |
+| HMAC grant, shared used-token table | `src/safety/grants.js`, `src/resolvers/index.js` |
+| Failure scenarios | `src/safety/failures.js`, [`docs/failure-matrix.md`](docs/failure-matrix.md) |
+| Scripted naive agent | `src/safety/naiveAgent.js` |
+| Budget stop | `src/run/budget.js` |
+| Threat model | [`docs/threat-model.md`](docs/threat-model.md) |
 
-```sh
-npm ci && npm test      # full suite, no network, no Jira
-npm run test:headroom   # simulation scenarios with per-scenario KVS byte budgets
-npm run safety-eval     # irreversible-action table
-npm run safety-eval     # pass/fail table of the irreversible-action checks
-```
-
-> This is a public snapshot of a Codegeist 2026 project. It is simulation-only: the tests run against in-memory fakes, and nothing here has been run against a live Jira site or a live LLM.
+> This is a public snapshot of a Codegeist 2026 project. The numbers above are from the in-memory store and the in-memory Jira client. Nothing here has been run against a live Jira site or a live model.
 
 ## 🚀 Quick start
 
-**Requirements:** Node 22.23.x (CI pins 22.23.4), Forge CLI 14.2.0, and a Jira Cloud site with Rovo
-enabled for anything that runs live. No Forge SQL and no external egress are used.
+**Offline, no Forge account.** Node is pinned to 22.23.4 (`.nvmrc`, CI, and `package.json` `engines`).
 
 ```sh
 git clone https://github.com/LeoLin990405/ticket-conductor-safety.git
 cd ticket-conductor-safety
-npm ci
+npm ci && npm run safety-eval && npm run demo:offline
+npm test
+npm audit
+```
+
+`docker build -t ticket-conductor-safety .` then `docker run --rm ticket-conductor-safety` runs the same safety eval and offline demo. `.devcontainer/devcontainer.json` uses that Dockerfile.
+
+A live development site also needs Forge CLI 14.2.0 and a Jira Cloud site with Rovo. No Forge SQL and no external egress are used.
+
+```sh
 export FORGE_EMAIL='<your Atlassian account email>'
 export FORGE_API_TOKEN='<token from id.atlassian.com/manage-profile/security/api-tokens>'
 npm run lint     # = forge lint
-npm test         # = node --test
 ```
 
 Deploy to the development environment and install on a site:

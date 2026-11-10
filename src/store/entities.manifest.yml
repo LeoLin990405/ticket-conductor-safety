@@ -68,6 +68,10 @@ app:
           # Critical-path ETA is not stored here.
           budget:
             type: any
+          # Shared used-grant rows. One any value. Omitted until a panel
+          # grant is written. The token is not stored. Do not remove once deployed.
+          grants:
+            type: any
         indexes:
           - name: by-epic
             partition:

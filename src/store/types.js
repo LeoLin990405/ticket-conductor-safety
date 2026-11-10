@@ -212,6 +212,9 @@ export const MEMORY_SCOPES = Object.freeze(['project', 'epic']);
  *   object (`deduped` only) is the flushed duplicate-drop tally. It is
  *   omitted until that number piggybacks on a budget write. `applied` and
  *   `retried` are not stored.
+ * @property {object} [grants] Shared confirmation rows, keyed by grant id.
+ *   Omitted until the Run panel shares a grant. The token is not stored.
+ *   `used` is compare-and-set so a second instance cannot replay it.
  */
 
 /**
