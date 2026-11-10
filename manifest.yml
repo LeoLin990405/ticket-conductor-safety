@@ -102,13 +102,28 @@ modules:
       name: Dispatch run
       function: dispatchRun
       actionVerb: UPDATE
-      description: "Other agents call this to start a saved plan. Input runId from plan-split. Returns {ok,runId,status}. A step starts when every dependsOn index is done; others wait. A repeat call does not enqueue again. No Jira writes."
+      description: "Start a saved plan. Requires boolean confirm, acknowledgeBlastRadius, and confirmToken from plan-split. A mismatch leaves the run planning and writes nothing. A repeat does not enqueue again."
       inputs:
         runId:
           title: Run id
           type: string
           required: true
           description: runId returned by plan-split.
+        confirm:
+          title: Confirm
+          type: boolean
+          required: false
+          description: Boolean true. The string true is refused.
+        acknowledgeBlastRadius:
+          title: Blast-radius acknowledgement
+          type: string
+          required: false
+          description: Echo plan-split acknowledgement.
+        confirmToken:
+          title: Confirmation token
+          type: string
+          required: false
+          description: Echo plan-split confirmToken.
     - key: get-run-status
       name: Get run status
       function: getRunStatus
@@ -182,7 +197,7 @@ modules:
       name: Fork run
       function: forkRun
       actionVerb: CREATE
-      description: "Fork a run from one step. Returns {ok,runId,status,forkedFromRunId,copy,rerun}. Re-runs only steps that depend on stepIdx. Optional input edits that step too. Prefix effects are not written again."
+      description: "Fork a run from one step. Requires boolean confirm, acknowledgeBlastRadius, and confirmToken. Re-runs steps that depend on stepIdx. A mismatch writes nothing. Prefix effects are not written again."
       inputs:
         runId:
           title: Run id
@@ -199,6 +214,21 @@ modules:
           type: string
           required: false
           description: Replacement input for that step. Omit to keep it and re-run only later steps.
+        confirm:
+          title: Confirm
+          type: boolean
+          required: false
+          description: Boolean true. The string true is refused.
+        acknowledgeBlastRadius:
+          title: Fork acknowledgement
+          type: string
+          required: false
+          description: Echo the fork acknowledgement sentence.
+        confirmToken:
+          title: Confirmation token
+          type: string
+          required: false
+          description: Token for this fork.
   consumer:
     - key: step-worker
       queue: step-queue

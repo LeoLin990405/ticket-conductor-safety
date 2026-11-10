@@ -19,6 +19,12 @@
     "lint": "forge lint",
     "test": "node --test",
     "test:simulation": "node --test --test-reporter=spec tests/simulation/*.test.mjs",
-    "test:headroom": "node --test --test-reporter=spec tests/simulation/scenarios.test.mjs"
+    "test:headroom": "node --test --test-reporter=spec tests/simulation/scenarios.test.mjs",
+    "safety-eval": "node scripts/safety-eval.mjs"
+  },
+  "overrides": {
+    "glob": "14.0.4",
+    "minimatch": "11.0.5",
+    "prosemirror-view": "1.42.9"
   }
 }

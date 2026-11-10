@@ -45,9 +45,13 @@ Success:
 
 ## dispatch-run
 
+Inputs: `runId`, `confirm` (boolean `true`), `acknowledgeBlastRadius` (the `acknowledgement` string from `plan-split`), `confirmToken` (the `confirmToken` string from `plan-split`).
+
 Success: `{ "ok": true, "runId": "uuid", "status": "running" }`.
 
-A second call with the same `runId` returns `running` again and does not enqueue another copy of the steps.
+`plan-split` also returns `acknowledgement` and `confirmToken`. They are not stored. A call with `confirm` omitted, `confirm` set to the string `"true"`, the wrong acknowledgement, or the wrong token returns `{ "ok": false, "code": "CONFIRMATION_REQUIRED", "status": "planning" }` and enqueues nothing. A call whose run is already past the wall-clock or step budget returns `{ "ok": false, "code": "BUDGET_EXCEEDED" }`.
+
+A second call with the same `runId`, after the run has left `planning`, returns the current status and does not enqueue another copy of the steps.
 
 ## get-run-status
 

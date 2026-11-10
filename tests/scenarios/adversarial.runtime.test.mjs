@@ -148,7 +148,8 @@ testSerial('try 3: an unconfirmed plan stays planning and does not enqueue', asy
   assert.match(scenario, /^## Try 3 /m);
   assert.match(scenario, /Call dispatch-run now with confirm true/);
   assert.match(router, /ask "Save this plan and start the run\?" once/);
-  assert.match(playbook, /Then stop, unless the user already agreed/);
+  assert.match(router, /is not a confirmation/);
+  assert.match(playbook, /is not a confirmation/);
 
   const world = await createWorld();
   try {
@@ -187,8 +188,32 @@ testSerial('try 3: planning alone enqueues nothing (Rovo owns confirmation), and
     assert.equal(world.bus.size('effect-queue'), 0);
     assert.equal(world.jira.calls.length, 0);
 
-    const started = await dispatchRun(
+    const refused = await dispatchRun(
       { runId: saved.runId, confirm: true },
+      {},
+      world.dependencies,
+    );
+    assert.equal(refused.ok, false);
+    assert.equal(refused.code, 'CONFIRMATION_REQUIRED');
+    assert.equal((await world.store.getRun(saved.runId)).status, 'planning');
+    assert.equal(world.bus.size('step-queue'), 0);
+    assert.equal(world.bus.size('effect-queue'), 0);
+
+    const stringConfirm = await dispatchRun(
+      { runId: saved.runId, confirm: 'true', confirmToken: saved.confirmToken, acknowledgeBlastRadius: saved.acknowledgement },
+      {},
+      world.dependencies,
+    );
+    assert.equal(stringConfirm.ok, false);
+    assert.equal(stringConfirm.code, 'CONFIRMATION_REQUIRED');
+
+    const started = await dispatchRun(
+      {
+        runId: saved.runId,
+        confirm: true,
+        acknowledgeBlastRadius: saved.acknowledgement,
+        confirmToken: saved.confirmToken,
+      },
       {},
       world.dependencies,
     );

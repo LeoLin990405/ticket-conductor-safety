@@ -33,7 +33,7 @@ import { briefForStep } from '../skills/brief.js';
 import { bulletList, doc, heading, paragraph, textNode } from '../worker/adf.js';
 import { fenceUntrusted, clip } from '../worker/guard.js';
 import { completeText } from '../worker/llm.js';
-import { commitRunBudget } from './budget.js';
+import { applyRunBudget, commitRunBudget, modelCallsExhausted, runBudgetStop } from './budget.js';
 import {
   MAX_STEPS,
   MAX_WAVES,
@@ -304,6 +304,9 @@ export async function decideLead(input) {
     existingSteps: input.existingSteps,
     nextWave: input.wave + 1,
   });
+  if (input.budget && (modelCallsExhausted(input.budget) || input.budget.elapsedMs > input.budget.wallClockMs)) {
+    return fallback;
+  }
   const llm = await completeText(
     {
       system: LEAD_SYSTEM,
@@ -311,6 +314,7 @@ export async function decideLead(input) {
       maxTokens: 600,
       // Run-level meter. Not the spawn budget above, and not a step brief.
       meter: input.meter,
+      budget: input.budget,
     },
     input.llm,
   );
@@ -420,6 +424,21 @@ function digestContext(predecessors, digestText) {
  * @returns {Promise<Array<any>>}
  */
 async function spawnWave(dependencies, run, predecessors, suggestions, wave, digestText) {
+  const stop = runBudgetStop(run.budget, dependencies.now(), run.createdAt);
+  const usedSteps = Number.isInteger(run?.budget?.usedSteps) ? run.budget.usedSteps : 0;
+  const maxSteps = Number.isInteger(run?.budget?.maxSteps) ? run.budget.maxSteps : MAX_STEPS;
+  // The stored step count includes the steps that are already running.
+  // Hitting the cap means this wave must not add another child issue.
+  // A full model-call cap or a blown wall clock stops the spawn too.
+  if (stop || usedSteps >= maxSteps) {
+    if (stop && run.status === 'running') {
+      await dependencies.store.updateRun(run.runId, {
+        status: 'blocked',
+        budget: stop.budget,
+      });
+    }
+    return [];
+  }
   const dependsOn = predecessors
     .map((step) => step.idx)
     .filter((idx) => Number.isInteger(idx));
@@ -725,6 +744,10 @@ export async function maybeReviewWave(dependencies, run, steps) {
     allowLlm: dependencies.allowLeadLlm !== false,
     llm: dependencies.llm,
     meter: modelMeter,
+    budget: applyRunBudget(run.budget, {
+      now: dependencies.now(),
+      startedAt: run.createdAt,
+    }),
   });
   const ledger = nextLedger(run, digest, decision);
   const nextStatus = decision.action === 'ask'

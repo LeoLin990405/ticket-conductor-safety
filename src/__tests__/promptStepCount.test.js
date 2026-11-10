@@ -12,8 +12,10 @@ test('prompts allow 1 to 8 steps and no longer require three', () => {
   assert.match(playbook, /1 to 8 steps/);
 });
 
-test('prompts call plan-split on agreement or when the request already says dispatch', () => {
-  assert.match(playbook, /then dispatch it/);
-  assert.match(playbook, /Call `plan-split` immediately/);
-  assert.doesNotMatch(router, /`confirm` set to `true`/);
+test('prompts do not treat plan-and-run as permission to dispatch', () => {
+  assert.match(playbook, /is not a confirmation/);
+  assert.match(router, /is not a confirmation/);
+  assert.match(router, /confirmToken/);
+  assert.doesNotMatch(router, /that is the agreement/);
+  assert.doesNotMatch(playbook, /that is the agreement/);
 });

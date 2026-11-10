@@ -30,6 +30,7 @@ import {
   replayRun,
 } from '../../src/actions/index.js';
 import { handoffGoal } from '../../src/actions/handoff.js';
+import { forkAcknowledgement, forkConfirmationToken } from '../../src/safety/guard.js';
 import {
   configureEffects,
   effectApplierHandler,
@@ -272,6 +273,58 @@ export async function createWorld(options = {}) {
     throw new Error(`simulation forbids fetch(${target}). Ticket text is data.`);
   };
 
+  /** @type {Map<string, {acknowledgement: string, confirmToken: string}>} */
+  const issuedConfirmation = new Map();
+
+  /**
+   * @param {object|null|undefined} result
+   */
+  function rememberConfirmation(result) {
+    if (
+      result
+      && typeof result.runId === 'string'
+      && typeof result.confirmToken === 'string'
+      && typeof result.acknowledgement === 'string'
+    ) {
+      issuedConfirmation.set(result.runId, {
+        acknowledgement: result.acknowledgement,
+        confirmToken: result.confirmToken,
+      });
+    }
+  }
+
+  /**
+   * @param {string} key
+   * @param {Record<string, unknown>|null|undefined} payload
+   * @returns {Record<string, unknown>}
+   */
+  function withPersonConfirmation(key, payload) {
+    const body = payload && typeof payload === 'object' ? { ...payload } : {};
+    const explicit = body.confirm !== undefined
+      || body.confirmToken !== undefined
+      || body.acknowledgeBlastRadius !== undefined;
+    if (explicit) return body;
+    if (key === 'dispatch-run') {
+      const issued = issuedConfirmation.get(body.runId);
+      if (!issued) return body;
+      return {
+        ...body,
+        confirm: true,
+        acknowledgeBlastRadius: issued.acknowledgement,
+        confirmToken: issued.confirmToken,
+      };
+    }
+    if (key === 'fork-run') {
+      return {
+        ...body,
+        confirm: true,
+        acknowledgeBlastRadius: forkAcknowledgement(body.runId, body.stepIdx),
+        confirmToken: forkConfirmationToken(body.runId, body.stepIdx, body.input),
+      };
+    }
+    return body;
+  }
+
   return {
     seed,
     clock,
@@ -288,6 +341,13 @@ export async function createWorld(options = {}) {
     /**
      * Call one Rovo action the way another agent would, against this world.
      *
+     * `dispatch-run` and `fork-run` require a confirmation token. When the
+     * payload does not mention `confirm`, `confirmToken`, or
+     * `acknowledgeBlastRadius`, this harness fills them in from the
+     * `plan-split` result it already holds. That is the simulated person
+     * agreeing to the card. A payload that sets any of those fields is
+     * sent unchanged, so a test can refuse or send a bad token.
+     *
      * @param {string} key Manifest action key, such as `plan-split`.
      * @param {Record<string, unknown>} payload
      * @param {Record<string, unknown>} [context]
@@ -298,7 +358,8 @@ export async function createWorld(options = {}) {
         return { ok: false, error: `unknown action ${key}`, code: 'UNKNOWN_ACTION' };
       }
       try {
-        const result = await handler(payload, context, runtime);
+        const result = await handler(withPersonConfirmation(key, payload), context, runtime);
+        rememberConfirmation(result);
         if (result && typeof result === 'object' && result.ok === false) return result;
         return result;
       } catch (error) {
@@ -311,12 +372,16 @@ export async function createWorld(options = {}) {
       }
     },
     /**
-     * Another agent hands a goal to Conductor: recall, plan, dispatch, status.
+     * Another agent hands a goal to Conductor. The handoff does not dispatch
+     * unless `input` echoes the confirmation token. This method remembers
+     * the token so a later `invoke('dispatch-run')` can act as the person.
      *
      * @param {Record<string, unknown>} input
      */
-    handoff(input) {
-      return handoffGoal(input, { principal: { accountId: 'account-demo' } }, runtime);
+    async handoff(input) {
+      const result = await handoffGoal(input, { principal: { accountId: 'account-demo' } }, runtime);
+      rememberConfirmation(result);
+      return result;
     },
     async drainEffects() {
       let guard = 0;

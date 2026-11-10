@@ -27,10 +27,16 @@
  * `usedTokens` is the sum of `usage.total_tokens`, or `input_tokens` plus
  * `output_tokens`, from chats that actually ran. There is no separate token
  * cap yet: the per-call `max_completion_tokens` already lives on each
- * `completeText` request. This module only records. Going over a cap does
- * not change `run.status`. The critical path, the ETA, and the one-pair
- * merge live in `criticalPath.js` and run from `plan-split` before the
- * steps are stored. They are not written onto this object.
+ * `completeText` request. This module records the counters.
+ * {@link runBudgetStop} is what the state machine, the worker, and the lead
+ * consult before the next model call or Jira enqueue. A counter that is
+ * already over its cap does not by itself rewrite `run.status` here. The
+ * caller that is about to write sets `blocked` and skips the write. Equal
+ * to a cap is still inside, except model calls: the next chat is refused
+ * once `usedModelCalls` has reached `maxModelCalls`. The critical path, the
+ * ETA, and the one-pair merge live in `criticalPath.js` and run from
+ * `plan-split` before the steps are stored. They are not written onto this
+ * object.
  *
  * Chaos counters (novelty #7) share this same `any` value so the panel
  * does not need a new attribute. `chaos` is `{injected, healed,
@@ -336,9 +342,9 @@ export function applyRunBudget(budget, delta = {}) {
 
 /**
  * True when every measured counter is still inside its cap.
- * A false result does not block the run and does not merge steps.
- * The merge (`criticalPath.js`) looks at the projected path as well as
- * these counters, and only while the plan is still a draft.
+ * Equal to a cap is inside. This is the read-side check. Callers that are
+ * about to start another model call use {@link modelCallsExhausted}, which
+ * treats a counter sitting on the cap as full.
  *
  * @param {RunBudget} budget
  * @returns {boolean}
@@ -347,6 +353,70 @@ export function isWithinRunBudget(budget) {
   return budget.usedSteps <= budget.maxSteps
     && budget.usedModelCalls <= budget.maxModelCalls
     && budget.elapsedMs <= budget.wallClockMs;
+}
+
+/**
+ * Why a live budget must not start another irreversible action.
+ * Equal to a cap is not a reason. A step count of 8 is the plan that is
+ * allowed to run; only a 9th stored step is `steps`.
+ *
+ * @param {object|null|undefined} budget
+ * @returns {'steps'|'model-calls'|'wall-clock'|null}
+ */
+export function budgetStopReason(budget) {
+  if (!budget || typeof budget !== 'object') return null;
+  if (Number.isInteger(budget.usedSteps) && Number.isInteger(budget.maxSteps)
+    && budget.usedSteps > budget.maxSteps) {
+    return 'steps';
+  }
+  if (Number.isInteger(budget.usedModelCalls) && Number.isInteger(budget.maxModelCalls)
+    && budget.usedModelCalls > budget.maxModelCalls) {
+    return 'model-calls';
+  }
+  if (Number.isInteger(budget.elapsedMs) && Number.isInteger(budget.wallClockMs)
+    && budget.elapsedMs > budget.wallClockMs) {
+    return 'wall-clock';
+  }
+  return null;
+}
+
+/**
+ * True when another model call would pass `maxModelCalls`.
+ * A counter sitting on the cap is exhausted. A missing budget is not,
+ * so an old row still renders; callers that are about to chat pass the
+ * live object from {@link applyRunBudget}.
+ *
+ * @param {object|null|undefined} budget
+ * @returns {boolean}
+ */
+export function modelCallsExhausted(budget) {
+  if (!budget || typeof budget !== 'object') return false;
+  if (!Number.isInteger(budget.usedModelCalls) || !Number.isInteger(budget.maxModelCalls)) {
+    return false;
+  }
+  return budget.usedModelCalls >= budget.maxModelCalls;
+}
+
+/**
+ * Refresh elapsed from the caller's clock and report a hard stop, if any.
+ * Does not write. `steps` here means the stored count is already past the
+ * cap. A full model-call cap is reported as `model-calls` even when the
+ * stored count is equal to the cap, because the next chat would exceed it.
+ *
+ * @param {unknown} budget
+ * @param {number} now
+ * @param {number} [startedAt]
+ * @returns {{reason: 'steps'|'model-calls'|'wall-clock', budget: RunBudget}|null}
+ */
+export function runBudgetStop(budget, now, startedAt) {
+  const live = applyRunBudget(budget, {
+    now,
+    startedAt: Number.isFinite(startedAt) ? startedAt : undefined,
+  });
+  const over = budgetStopReason(live);
+  if (over) return { reason: over, budget: live };
+  if (modelCallsExhausted(live)) return { reason: 'model-calls', budget: live };
+  return null;
 }
 
 /**

@@ -51,6 +51,10 @@ import {
   publicStatusStep,
 } from './contract.js';
 import { planCardFromSteps, previewBlastRadius } from '../blast/preview.js';
+import {
+  confirmationFields,
+  evaluateForkAuthorization,
+} from '../safety/guard.js';
 import { applyBlastGate } from '../run/approval.js';
 import { readRunBudget } from '../run/budget.js';
 import {
@@ -370,6 +374,10 @@ export async function planSplit(payload, context, overrides) {
       eta: replan.eta,
       budgetOutlook: replan.budgetOutlook,
     },
+    // Echo these on dispatch-run. They are not stored. The token is the
+    // hash of this card's mutating writes. A later change to the plan is a
+    // new run, so the token does not need a stored copy.
+    ...confirmationFields(blastRadius),
   };
 }
 
@@ -384,9 +392,36 @@ export async function planSplit(payload, context, overrides) {
 export async function dispatchRun(payload, _context, overrides) {
   const source = payload && typeof payload === 'object' ? payload : {};
   const runId = readString(source, 'runId');
-  // Confirmation is Rovo's own card for UPDATE actions. A string or boolean
-  // `confirm` from older prompts is ignored, never required.
-  const run = await startRun(runId, overrides);
+  // The handler, not the Rovo card, decides. `startRun` recomputes the
+  // blast-radius card from the stored steps and refuses the transition
+  // unless `confirm` is boolean true and the token matches that card.
+  const run = await startRun(runId, {
+    ...overrides,
+    requireConfirmation: true,
+    confirmation: {
+      confirm: source.confirm,
+      acknowledgeBlastRadius: source.acknowledgeBlastRadius,
+      confirmToken: source.confirmToken,
+    },
+  });
+  if (run?.refusedConfirmation) {
+    return {
+      ok: false,
+      code: run.refusedConfirmation.code,
+      error: run.refusedConfirmation.reason,
+      runId: run.runId,
+      status: run.status,
+    };
+  }
+  if (run?.budgetStopped) {
+    return {
+      ok: false,
+      code: 'BUDGET_EXCEEDED',
+      error: `run budget exceeded (${run.budgetStopped})`,
+      runId: run.runId,
+      status: run.status,
+    };
+  }
   // `startRun` attaches the card only on the planning transition, and only
   // on the object it returns. A repeat dispatch is a no-op and has no card.
   // The panel recomputes one from the steps it already loaded.
@@ -433,6 +468,7 @@ export async function getRunStatus(payload, _context, overrides) {
     steps,
     planCard: planCardFromSteps(steps),
   });
+  const confirmation = run.status === 'planning' ? confirmationFields(blastRadius) : null;
   // Same steps this handler already loaded. The path and the ETA are not
   // stored and they do not add a KVS query. A read never merges steps.
   const schedule = scheduleFor(
@@ -451,6 +487,7 @@ export async function getRunStatus(payload, _context, overrides) {
     },
     steps: steps.map(publicStatusStep),
     blastRadius,
+    ...(confirmation ? confirmation : {}),
   };
 }
 
@@ -530,6 +567,16 @@ export async function replayRun(payload, _context, overrides) {
 export async function forkRun(payload, context, overrides) {
   const source = payload && typeof payload === 'object' ? payload : {};
   const runId = readString(source, 'runId');
+  const forkDecision = evaluateForkAuthorization(source);
+  if (!forkDecision.ok) {
+    return {
+      ok: false,
+      code: forkDecision.code,
+      error: forkDecision.reason,
+      runId,
+      status: null,
+    };
+  }
   const stepIdx = source.stepIdx;
   const createdBy = accountId(source, context);
   /** @type {Record<string, unknown>} */

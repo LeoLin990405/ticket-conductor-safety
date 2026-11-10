@@ -35,7 +35,7 @@ Jira as the ledger · one confirm before anything is created · idempotent Jira 
 - **Flight recorder.** An append-only `event` entity per run backs dry-run replay against today's Jira and fork-from-step-N.
 - **Memory that reaches the next plan.** A finished run writes one `[Conductor memory]` comment; recalled memories are injected inside a 1,536-byte budget.
 - **Blast-radius preview.** `previewBlastRadius` lists the Jira writes a plan will make, before anything is dispatched.
-- **Simulation-tested.** 48 test files under `node --test`, including in-memory fakes for KVS, queues, Jira REST, Confluence CQL, and `@forge/llm`, with per-scenario KVS byte budgets.
+- **Simulation-tested.** `npm test` runs the suite under `node --test`, including in-memory fakes for KVS, queues, Jira REST, Confluence CQL, and `@forge/llm`, with per-scenario KVS byte budgets. `npm run safety-eval` prints the irreversible-action checks.
 
 ## 🧠 Architecture
 
@@ -111,6 +111,9 @@ Every Jira write goes through a gated, deduplicated path, and the effect of a pl
 | Mechanism | Where to read it |
 |---|---|
 | Blast-radius preview and compensating undo | [`docs/blast-radius.md`](docs/blast-radius.md), `src/blast/preview.js` |
+| Confirmation token checked before `dispatch-run` writes | `src/safety/guard.js`, `prompts/router.md` |
+| Gated children created only after approval | `stepIdsBlockedByOpenApproval` in `src/run/approval.js` |
+| Step, model-call, and wall-clock hard stop | `runBudgetStop` in `src/run/budget.js` |
 | Architecture freeze (scope, queues, effects, storage shape) | [`docs/freeze.md`](docs/freeze.md) |
 | Human approval gate for risky runs | `src/run/approval.js` |
 | Deduplicated Jira writes via `requestKey` | `src/effects/requestKey.js` |
@@ -119,6 +122,7 @@ Every Jira write goes through a gated, deduplicated path, and the effect of a pl
 ```sh
 npm ci && npm test      # full suite, no network, no Jira
 npm run test:headroom   # simulation scenarios with per-scenario KVS byte budgets
+npm run safety-eval     # pass/fail table of the irreversible-action checks
 ```
 
 > This is a public snapshot of a Codegeist 2026 project. It is simulation-only: the tests run against in-memory fakes, and nothing here has been run against a live Jira site or a live LLM.

@@ -49,8 +49,9 @@ import { briefForStep } from '../skills/brief.js';
 import { maybeReviewWave } from './leadLoop.js';
 import { workSteps } from './digest.js';
 import { planCardFromSteps, previewBlastRadius } from '../blast/preview.js';
-import { isApprovalGate } from './approval.js';
-import { applyRunBudget, commitRunBudget } from './budget.js';
+import { isApprovalGate, stepIdsBlockedByOpenApproval } from './approval.js';
+import { applyRunBudget, commitRunBudget, runBudgetStop } from './budget.js';
+import { evaluateDispatchAuthorization } from '../safety/guard.js';
 
 /**
  * Statuses after which a run must not change again in WP3.
@@ -324,10 +325,12 @@ async function recomputeRunStatusUnlocked(dependencies, runId) {
  *
  * Behaviour:
  * 1. `planning -> running` with an optimistic run update.
- * 2. For each step, enqueue one `createIssue` effect. The discriminator is
- *    fixed (`child-issue`), so a retried `startRun` cannot create a second Jira
- *    issue for the same step. Child issues are created for the whole plan,
- *    including steps that are still waiting on another step.
+ * 2. For each step that is not held by an open approval gate, enqueue one
+ *    `createIssue` effect. The discriminator is fixed (`child-issue`), so a
+ *    retried `startRun` cannot create a second Jira issue for the same step.
+ *    A step that depends on an open gate does not get a child until that
+ *    gate is approved. The gate's own child is created here so a person can
+ *    transition it.
  * 3. Push `{runId, stepId, attempt}` to `step-queue` only for steps whose
  *    `dependsOn` list is already satisfied. The others move to `waiting`
  *    and start later, from `reportStep`, once those dependencies are `done`.
@@ -344,6 +347,8 @@ async function recomputeRunStatusUnlocked(dependencies, runId) {
  * @returns {Promise<import('../store/types.js').Run>}
  */
 export async function startRun(runId, overrides) {
+  const requireConfirmation = overrides?.requireConfirmation === true;
+  const confirmation = overrides?.confirmation;
   const dependencies = resolveDependencies(overrides);
   if (typeof runId !== 'string' || runId.length === 0) {
     throw new StoreValidationError('startRun runId is required');
@@ -372,6 +377,25 @@ export async function startRun(runId, overrides) {
       steps,
       planCard: planCardFromSteps(steps),
     });
+    // Agent-facing callers set `requireConfirmation`. The internal state
+    // machine does not, so a unit test that drives `startRun` still starts.
+    // `dispatch-run`, `fork` is separate, `handoff`, and the dev webtrigger
+    // all set the flag. A refusal returns the planning run and enqueues
+    // nothing. The card is on the return value only.
+    if (requireConfirmation) {
+      const decision = evaluateDispatchAuthorization(confirmation, blastRadius);
+      if (!decision.ok) {
+        return { ...run, blastRadius, refusedConfirmation: decision };
+      }
+    }
+    const budgetStop = runBudgetStop(run.budget, dependencies.now(), run.createdAt);
+    if (budgetStop) {
+      const blockedRun = await patchRun(dependencies.store, runId, {
+        status: 'blocked',
+        budget: budgetStop.budget,
+      });
+      return { ...blockedRun, blastRadius, budgetStopped: budgetStop.reason };
+    }
     // Refresh elapsed on the write this transition already does. The
     // simulator clock is `dependencies.now`. No second KVS write.
     const runningRun = await patchRun(dependencies.store, runId, {
@@ -423,8 +447,12 @@ export async function startRun(runId, overrides) {
     // journalled effects untouched. The briefed rows carry the same
     // dependsOn plus the sub-agent brief.
     const pending = briefed.filter((step) => step.status !== 'done');
+    // Held steps wait for an open approval gate. Their child issue is
+    // enqueued from `releaseWaitingSteps` after the gate is approved.
+    const heldForApproval = stepIdsBlockedByOpenApproval(briefed);
 
     for (const step of pending) {
+      if (heldForApproval.has(step.stepId)) continue;
       await dependencies.enqueueEffect({
         runId,
         stepId: step.stepId,
@@ -480,9 +508,42 @@ export async function startRun(runId, overrides) {
  * @returns {Promise<void>}
  */
 async function releaseWaitingSteps(dependencies, runId, steps) {
+  /** @type {import('../store/types.js').Run|null} */
+  let runForIssue = null;
   for (const step of steps) {
     if (step.status !== 'waiting' || isApprovalGate(step) || !dependenciesSatisfied(step, steps)) {
       continue;
+    }
+    // A gated step has no child yet. Create it now, unless the run is
+    // already outside its budget. Steps that were issued a child at
+    // dispatch already have `childIssueKey` once the effect has applied,
+    // and this branch does not run for them.
+    if (!step.childIssueKey) {
+      if (!runForIssue) {
+        runForIssue = await dependencies.store.getRun(runId);
+      }
+      if (!runForIssue) return;
+      const budgetStop = runBudgetStop(
+        runForIssue?.budget,
+        dependencies.now(),
+        runForIssue?.createdAt,
+      );
+      if (budgetStop) {
+        if (runForIssue && runForIssue.status === 'running') {
+          await dependencies.store.updateRun(runId, {
+            status: 'blocked',
+            budget: budgetStop.budget,
+          });
+        }
+        return;
+      }
+      await dependencies.enqueueEffect({
+        runId,
+        stepId: step.stepId,
+        kind: 'createIssue',
+        payload: buildCreateIssuePayload(runForIssue, step),
+        discriminator: 'child-issue',
+      });
     }
     const dependencyContext = dependencyContextFor(step, steps);
     const released = await dependencies.store.updateStep(
