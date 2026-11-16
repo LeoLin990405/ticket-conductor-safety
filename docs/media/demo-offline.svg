@@ -13,7 +13,7 @@
   <circle cx="40" cy="18" r="6" fill="#fbbf24"/>
   <circle cx="60" cy="18" r="6" fill="#34d399"/>
   <text class="title" x="80" y="23">npm run demo:offline</text>
-  <text class="line" x="24" y="56">node v22.23.4</text>
+  <text class="line" x="24" y="56">node v22.23.3</text>
   <text class="line" x="24" y="78">baseline irreversible writes: 6</text>
   <text class="line" x="24" y="100">guarded irreversible writes: 0</text>
   <text class="line" x="24" y="122">guarded blocked: 6 of 6</text>

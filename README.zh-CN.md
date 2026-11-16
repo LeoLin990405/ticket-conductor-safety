@@ -23,10 +23,23 @@ Jira 即账本 · 确认后才创建 · Jira 副作用幂等 · Watchdog 自动�
 > Flight Recorder 与模拟测试框架都在本仓库里，没有任何东西部署到 production。live 端到端验证只发生在
 > development 站点，排期见 [`docs/milestones.md`](docs/milestones.md)。
 
+## 🎯 项目概述与解决的问题
+
+Ticket Conductor 是面向 Jira 工作协调者的开发阶段 Atlassian Forge app。它把一张 Epic
+拆成最多八个步骤，监督队列 worker、依赖、重试和结果汇报。要解决的不只是任务拆解：
+拥有原始写入工具的 AI 可能重复创建工单、服从工单里的恶意指令，或在未获批准、预算耗尽时继续写入。
+
+本安全参赛版本把**规划与执行分开**：模型通过受限 action 提出计划，用户先在 Run 面板查看影响范围，
+服务器拿到人工授权后才启动 Jira effects。目标是范围受控、可检查的流程，而不是拥有无限 Jira 权限的自主 agent。
+下文证据全部来自离线测试，不代表生产安全认证。
+
+**评审导航：** [项目概述](#-项目概述与解决的问题) · [安全机制](#-安全) ·
+[支持证据与示例](#-支持证据) · [局限与改进](#-范围限制与路线图)。
+
 ## ✨ 特性
 
 - **受限的 Router。** `conductor-router` 是一个 `rovo:agent`，它的全部工具清单就是七个 action；它自己从不写 Jira。
-- **先确认，再创建。** `plan-split` 只把 run 存为 `planning`；`dispatch-run` 是另一次调用，所以用户同意之前不会出现任何子工单。
+- **先确认，再创建。** `plan-split` 只把 run 存为 `planning`，不返回确认 token；Run 面板签发并消费一次性 HMAC 授权，缺少授权的 `dispatch-run` 不会入队。
 - **每个 step 一张子工单。** 计划里的每个 step 对应一张 Jira 子工单，加一条 Custom Entity Store 里的 `step` 记录。
 - **Worker 是队列 consumer，不是 agent。** `step-worker` 跑在 `step-queue` 上，`timeoutSeconds: 900`；`workerType` 只在该 consumer 内部选择处理函数。
 - **Jira 写入幂等。** 每次创建、评论、状态流转都是一个 `effect`，键为 `sha256(runId|stepId|kind|discriminator)`；attempt 号不参与计算。
@@ -34,7 +47,7 @@ Jira 即账本 · 确认后才创建 · Jira 副作用幂等 · Watchdog 自动�
 - **Flight Recorder。** 每次 run 都有一条 append-only 的 `event` 记录，支撑对今天 Jira 的 dry-run 回放，以及从某个 step fork。
 - **记忆会影响下一次计划。** run 结束后写一条 `[Conductor memory]` 评论；召回的记忆注入时受 1,536 字节预算约束。
 - **Blast radius 预览。** `previewBlastRadius` 在 dispatch 之前就列出这次计划会产生哪些 Jira 写入。
-- **有模拟测试。** 48 个 `node --test` 测试文件，包括 KVS、队列、Jira REST、Confluence CQL 与 `@forge/llm` 的内存 fake，以及逐场景的 KVS 字节预算。
+- **有模拟测试。** `npm test` 使用 `node --test`，包括 KVS、队列、Jira REST、Confluence CQL 与 `@forge/llm` 的内存 fake，以及逐场景的 KVS 字节预算；`npm run safety-eval` 检查不可逆动作防护。
 
 ## 🧠 架构
 
@@ -104,24 +117,51 @@ applier，`worker/` 是 step worker 与各 `workerType` 处理函数，`watchdog
 
 ## 🛡️ 安全
 
-不可逆动作是应用无法干净撤回的 Jira 写入：创建工单、流转状态、修改标量字段。清单里没有删除工单的 scope。撤销会把子工单转到 Done 并打上 `conductor-rolled-back` 标签；状态只在工单仍停在本次运行留下的状态时才写回；字段只在仍等于本次写入的值时才写回。
+这里的不可逆动作是无法干净抹除的 Jira 写入：创建工单、流转状态、修改标量字段。评论也是写入，
+但应用可以删除自己写的评论，因此不计入离线演示的不可逆写入次数。撤销后新建工单仍然存在；
+manifest 没有删除工单的 scope。
 
-模型只有七个 action，自己不能写 Jira。`plan-split` 把 run 存为 `planning`，并且不返回 token。Run 面板签发一次性 HMAC，把已用授权写到 `run.grants`，并在同一次调用里消费它。`startRun` 在每条路径上检查授权。含糊的目标、缺少 Epic 或步骤、畸形参数、伪造、过期或重放的授权，以及存储写入失败，都会在调用 Jira 之前停下。超时或写到一半的 effect 会失败关闭，后续投递不会再次调用 Jira。预算耗尽会排空队列里尚未发出的正向 effect。
+| 边界 | 已实现的防护 | 代码 / 证据 |
+|---|---|---|
+| 模型 → 工具 | Router 只有七个 action，没有原始 Jira 写工具。`plan-split` 校验目标与计划，只存 `planning`，不返回确认 token。 | [`manifest.yml`](manifest.yml)、[`src/actions/index.js`](src/actions/index.js)、[`src/safety/goal.js`](src/safety/goal.js) |
+| 人工 → 执行 | Run 面板读取 Forge resolver 上下文账号，不信任 payload 账号。签发与 run 影响范围卡片绑定、15 分钟有效、一次性使用的 HMAC 授权，并在同次调用消费。面板路径把授权元数据共享到 `run.grants`，公开响应不包含 token 或授权行。 | [`src/resolvers/index.js`](src/resolvers/index.js)、[`src/safety/grants.js`](src/safety/grants.js) |
+| 规划 → 队列 | `startRun` 在启动前检查授权；单独 `confirm: true`、伪造、过期、跨 run 或重放的授权不入队。共享授权存储失败则拒绝启动。被未开放 approval gate 拦住的步骤，连子工单创建也会推迟。 | [`src/run/stateMachine.js`](src/run/stateMachine.js)、[`src/run/approval.js`](src/run/approval.js)、[失败矩阵](docs/failure-matrix.md) |
+| 队列 → Jira | 确定性 effect key 与行认领抑制重复应用；超时或部分执行的 effect 失败关闭，不自动重复写入。预算耗尽会阻塞 run、清理 pending 正向 effect，保留补偿 effect。 | [`src/effects/applier.js`](src/effects/applier.js)、[`src/run/budget.js`](src/run/budget.js) |
+| 检索文本 → worker | 工单与页面文本作为不可信数据加围栏，移除其中的围栏标签。worker 忽略模型输出的 effects，过滤不在已检索来源里的引用。这限制写入能力，不证明所有注入或误导回答都无害。 | [`src/worker/guard.js`](src/worker/guard.js)、[`src/worker/llm.js`](src/worker/llm.js)、`FS-INJECT-ISSUE` |
+| 检查 / 恢复 | 预览计划写入；Flight Recorder 事件与 effect 结果支持检查和回放。撤销会关闭并标记新建子工单，有条件地恢复状态；`restoreFields` 使用保存的标量旧值，且只在当前值仍等于本次写入时恢复。 | [影响范围与补偿撤销](docs/blast-radius.md)、[`src/effects/jira.js`](src/effects/jira.js)、[Flight Recorder](docs/flight-recorder.md) |
 
-在本工作区的 Node v22.23.4 上：
+这些是 Forge app 已声明 scope 内的应用层控制，**不是**独立的逐用户 Jira 权限系统或额外身份验证。
+参与者、信任边界和有限的 SAIF 对照见[威胁模型](docs/threat-model.md)；部署前请先读下方局限。
 
-| 命令 | 结果 |
+## 🧪 支持证据
+
+本次于 **2026-11-16（CST，America/Chicago）** 从 main 的
+[`882cfeb`](https://github.com/LeoLin990405/ticket-conductor-safety/commit/882cfeb) 重新核验，环境为
+**Node v22.23.3 / npm 10.9.9**。仓库固定的是 **22.23.4**，本地补丁版本差异产生了 engine warning，
+不能当成固定版本上的复测。没有调用真实 Jira、付费 LLM 或生产凭据。
+
+| 命令 | 本次实际结果 |
 |---|---|
-| `npm test` | 366 通过，1 跳过，0 失败 |
-| `npm run safety-eval` | 37 通过，0 失败 |
-| `npm run demo:offline` | 基线 6 次不可逆 mock Jira 写入，开启防护后 0 次（6 次里 6 次被拦住） |
-| `npm audit` | 0 个漏洞 |
+| `npm ci` | 按 lockfile 安装；有 engine 与上游 peer dependency 警告 |
+| `npm test` | **366 通过，1 跳过，0 失败**；内存 / 注入 fake |
+| `npm run safety-eval` | **37 通过，0 失败**，包含 18 行失败状态矩阵 |
+| `npm run demo:offline` | 脚本基线 **6 次不可逆 mock Jira 写入**；防护路径 **0 次**，无人工授权的 **6/6 被拦截** |
+| `npm audit` | 本 lockfile 检查时报告 **0 个漏洞**，不代表安全证明 |
+| `npm run lint` | **未验证：** 本地 Secret Service / keytar 服务不可用，退出码 1 |
 
-这 37 行里有 18 行失败状态矩阵。[`docs/failure-matrix.md`](docs/failure-matrix.md) 把每一类映射到场景 id。[`docs/evidence/safety-eval.json`](docs/evidence/safety-eval.json) 是同一条命令写出的机器可读结果。基线是一个对着原始 mock Jira 的脚本化 agent，不是在线模型。[`docs/threat-model.md`](docs/threat-model.md) 写了资产、参与者、模型 / 面板 / 服务器边界，以及与 Google SAIF 的简短对照。
+使用默认测试环境即可，框架会注入假模型客户端。设置 `CONDUCTOR_LLM=off` 还会禁用这些 fake，
+导致模型路径断言失败，并不是离线测试的必要设置。[复测记录](docs/evidence/readme-verification-2026-11-16.md)
+保留了该次失败的诊断尝试、默认配置成功复测，以及跳过测试的原因。
 
-mock 是本仓库的 REST 模型。超时会使 effect 行失败，但不会取消已经发出的 HTTP 调用。面板上的账号 id 来自 Forge resolver 上下文，没有第二因素。完整限制见 [`docs/drawerrr-submission.md`](docs/drawerrr-submission.md)。
+| 证据 | 能说明什么 / 不能说明什么 |
+|---|---|
+| [离线演示文本](docs/media/demo-offline.txt) · [终端渲染图](docs/media/demo-offline.svg) · [实现](src/safety/naiveAgent.js) | 六个固定意图：创建、流转、改字段、注入指令、重复创建、畸形字段。基线直连 mock，防护路径走 action 与校验；不是在线模型基准或攻击成功率测量。 |
+| [安全报告](docs/evidence/safety-eval.md) · [JSON](docs/evidence/safety-eval.json) · [终端渲染图](docs/media/safety-eval.svg) | 授权、启动、预算、撤销、畸形输入、注入、超时与部分失败检查。SVG 是脚本文字渲染，不是真实 Jira 截图。 |
+| [失败矩阵](docs/failure-matrix.md) · [场景代码](src/safety/failures.js) | 18 个具名失败场景的预期与实测，包括无账号上下文、过期 / 重放授权、共享存储失败和执行中重复投递。 |
+| [模拟框架](tests/simulation/) · [书面场景](tests/scenarios/) | 真实 handler 配合假 KVS、队列、Jira、Confluence 与模型响应；书面 live 场景不等于已经实跑。 |
+| [威胁模型](docs/threat-model.md) · [设计](docs/DESIGN.md) · [参赛说明](docs/drawerrr-submission.md) | 设计与边界。参赛说明和里程碑中的旧版本 / 结果是历史记录；本 README 的复测以本次日期记录为准。 |
 
-> 这是 Codegeist 2026 项目的公开快照。上表数字来自内存 store 和内存 Jira 客户端。本仓库没有对真实 Jira 站点或真实模型跑过这些检查。
+按下方离线快速开始即可重现。真实演示视频仍在路线图中；当前演示证据是文本记录与生成的渲染图。
 
 ## 🚀 快速开始
 
@@ -193,7 +233,7 @@ forge tunnel                                                                    
 | 阶段 | 行为 |
 |---|---|
 | Plan | `plan-split` 拒绝超过八个 step、未知 `workerType`、越界的 `dependsOn` 以及任何环；被拒的计划什么都不存 |
-| Dispatch | `dispatch-run` 把 run 从 `planning` 推到 `running`，为每个 step 入队一条 `createIssue`，并把就绪的 step 推进 `step-queue` |
+| Dispatch | 有效人工授权后，`dispatch-run` 把 run 从 `planning` 推到 `running`；子工单 effect 入队，但未开放 approval gate 后的步骤暂缓创建，只把就绪 step 推进 `step-queue` |
 | Steps | `step-worker` 按 `(stepId, attempt)` 幂等；过期 attempt 直接退出，不产生副作用 |
 | Dependencies | step 在 `dependsOn` 里每个 index 都 `done` 之前保持 `waiting`；Watchdog 不扫描 `waiting` |
 | Effects | `effect-applier` 先认领行，再应用，再存结果；`applied` 与 `failed` 的行不会再发往 Jira |
@@ -237,14 +277,26 @@ npm run lint                # forge lint；需要 FORGE_EMAIL 与 FORGE_API_TOKE
 
 - **模拟测试框架。** [`tests/simulation/`](tests/simulation) 提供 KVS（带读写字节计数）、两个队列、Jira REST、Confluence CQL、`@forge/llm` 与 Watchdog 时钟的 fake，然后驱动真实 handler。
 - **字节预算。** 场景在 KVS 用量为零或超过上限时失败；上限取自实测量加约 15%，写在 [`tests/simulation/budget.mjs`](tests/simulation/budget.mjs)。
-- **CI。** [`.github/workflows/ci.yml`](.github/workflows/ci.yml) 在 push 与 PR 时用 Node 22.23.4 跑三步：单元与模块测试、模拟场景、`forge lint`。
+- **CI。** [`.github/workflows/ci.yml`](.github/workflows/ci.yml) 在 push 与 PR 时用 Node 22.23.4 跑单元与模块测试、模拟场景、安全评估、离线演示，再按凭据配置决定是否跑 `forge lint`。
 - **lint 需要 token。** 未配置 `FORGE_API_TOKEN` 时 CI 的 lint 步骤打印说明并以 0 退出，所以绿色的 CI 并不总等于 manifest 被 lint 过。
-- **已记录的结果。** [`docs/milestones.md`](docs/milestones.md) 记录 2026-11-04 的 `npm test` 为 **295 pass、1 skipped、0 fail**。这是仓库自己的日志，不是 CI 徽章。
+- **已记录的结果。** 本次离线结果与跳过原因见[带日期的复测记录](docs/evidence/readme-verification-2026-11-16.md)；[`docs/milestones.md`](docs/milestones.md) 保留历史结果。
 - **默认不调用模型。** `CONDUCTOR_LLM=off` 时 worker 写确定性评论并在输出里记 `generator: "fallback"`；`npm test` 会 mock `chat` 与 `list`，从不调用 SDK。
 
 ## 🧭 范围、限制与路线图
 
 这是一个 hackathon 项目，不是产品。下面这些边界是设计与测试真正约束到的。
+
+- **未完成生产验证。** 内存 REST 与存储 fake 不能证明真实 Jira 工作流、Forge 权限、跨实例并发或真实模型表现。
+  live 对抗与端到端验证仍待完成；本次也未完成本地 Forge lint。
+- **审批不等于完整身份与权限验证。** 人工边界是 resolver 账号，没有第二因素，也不证明目标作者就是审批者。
+  Jira 写入使用 app 身份（`asApp`），不是逐用户权限检查。多实例共享授权需要一致的服务端
+  `CONDUCTOR_CONFIRM_SECRET`；未设置时仅使用进程内随机 key。
+- **停止不等于取消。** 超时会标记 effect 失败，但不会取消已发出的 HTTP 请求，Jira 仍可能接受。
+  预算停止只清理 pending 正向 effect，不撤回已落地写入；部分失败需要核对，而非盲目重试。
+- **撤销是补偿，不是事务回滚。** 新建工单、memory 与 recorder 事件仍保留；有后续修改时可能跳过字段 / 状态恢复。
+  部分关闭失败可能留下已流转、却未加 rollback 标签的工单。
+- **记录与注入防护有边界。** 事件记录尽力写入，失败时可能有缺口；写入结果以 effect 行为准，不是加密防篡改审计。围栏和输出过滤限制模型写权限，
+  不保证回答准确、免疫所有注入或防止所有数据外泄。
 
 | 方面 | 边界 |
 |---|---|
@@ -263,8 +315,9 @@ npm run lint                # forge lint；需要 FORGE_EMAIL 与 FORGE_API_TOKE
 - [ ] 用真实 Router 跑完 [`tests/scenarios/06-adversarial-tries.md`](tests/scenarios/06-adversarial-tries.md) 里的五个对抗用例
 - [ ] 让一个外部客户端连上 `rovo:mcp` 并确认 `tools/list`
 - [ ] 在 demo 站点完成 live 端到端验证（M4）
-- [ ] 增加 `approval` DAG 节点与按风险触发的 gate（novelty #5）
-- [ ] 为 transition 与字段编辑保存 `before` 快照，然后启用 `restoreFields`
+- [x] 支持 approval DAG 节点、计划有空间时按分数阈值插入 gate，并推迟受 gate 限制的子工单创建
+- [ ] 在真实 development 站点验证 gate 阈值与审批行为
+- [x] 为 `setFields` 保存标量旧值并通过 `restoreFields` 恢复（transition 已保存 `before.statusName`）
 - [ ] 录制演示视频并完成 Devpost 文案（M5、M6）
 
 ## 🤝 参与贡献
