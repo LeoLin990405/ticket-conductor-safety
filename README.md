@@ -24,6 +24,22 @@ Jira as the ledger · one confirm before anything is created · idempotent Jira 
 > repository, and nothing here is deployed to production. Live end-to-end runs are development-site
 > work only, scheduled in [`docs/milestones.md`](docs/milestones.md).
 
+## 🎯 Project overview & problem
+
+Ticket Conductor is a development-stage Atlassian Forge app for people coordinating work in Jira.
+It turns one Epic into a plan of up to eight steps, then supervises queue workers, dependencies,
+retries, and result reporting. The problem is not just splitting work: an AI assistant with raw
+write tools can create duplicate issues, act on ticket-borne instructions, or keep writing after
+approval or resource limits should have stopped it.
+
+This safety entry separates **planning from execution**. The model proposes work through a restricted
+action surface; a person reviews the blast-radius preview in the Run panel before the server starts
+Jira effects. The goal is a bounded, inspectable workflow, not an autonomous agent with unrestricted
+Jira access. The evidence below is offline; it is not a production-safety claim.
+
+**Review guide:** [project overview](#-project-overview--problem) · [safeguards](#-safety) ·
+[evidence and examples](#-supporting-evidence) · [limitations and next steps](#-scope-limits--roadmap).
+
 ## ✨ Features
 
 - **Restricted Router.** `conductor-router` is a `rovo:agent` whose whole tool list is seven actions; it never writes to Jira itself.
@@ -106,33 +122,56 @@ The design rationale is in [`docs/DESIGN.md`](docs/DESIGN.md); the super-agent m
 
 ## 🛡️ Safety
 
-The irreversible action is a Jira write the app cannot take back cleanly: creating an issue, transitioning an issue, or setting a scalar field. There is no delete-issue scope. Undo closes a child and labels it `conductor-rolled-back`, restores a status only while the issue is still where the run left it, and restores scalar fields only while they still hold what the run wrote.
+The irreversible actions here are Jira writes the app cannot cleanly erase: issue creation, status
+transitions, and scalar field edits. Comments also mutate Jira, but are excluded from the demo's
+irreversible-write count because the app can delete its own comments. A created issue remains even
+after undo; there is no delete-issue scope.
 
-The model has seven actions and cannot write to Jira. `plan-split` stores a run as `planning` and does not return a token. The Run panel mints a single-use HMAC, writes the used-grant row onto `run.grants`, and consumes it in that invocation. `startRun` checks the grant on every path. A vague goal, a missing epic or step list, a malformed argument, a forged or expired or replayed grant, and a store error all stop before Jira. A timed-out or half-applied effect fails closed so a second delivery does not call Jira again. A budget stop drains queued forward effects.
+| Boundary | Implemented safeguard | Code / evidence |
+|---|---|---|
+| Model → tools | The Router has seven actions, not raw Jira write tools. `plan-split` validates the goal and plan, stores `planning`, and returns no confirmation token. | [`manifest.yml`](manifest.yml), [`src/actions/index.js`](src/actions/index.js), [`src/safety/goal.js`](src/safety/goal.js) |
+| Human → execution | The Run panel uses the Forge resolver context account id, not a payload-supplied identity. It mints and consumes a 15-minute, single-use HMAC grant bound to the run's blast-radius card. The panel path shares grant metadata on `run.grants`; tokens and grant rows are omitted from public responses. | [`src/resolvers/index.js`](src/resolvers/index.js), [`src/safety/grants.js`](src/safety/grants.js) |
+| Planning → queues | `startRun` checks the grant before a planning run starts; a bare `confirm: true`, forged, expired, cross-run, or replayed grant does not enqueue work. Shared-grant store errors refuse the start. Steps behind an open approval gate defer even their child-issue creation. | [`src/run/stateMachine.js`](src/run/stateMachine.js), [`src/run/approval.js`](src/run/approval.js), [`failure matrix`](docs/failure-matrix.md) |
+| Queues → Jira | Deterministic effect keys and a claimed effect row suppress duplicate application. Timed-out or partially applied effects fail closed rather than automatically repeat the write. A budget stop blocks the run and drains pending forward effects; compensating effects remain eligible. | [`src/effects/applier.js`](src/effects/applier.js), [`src/run/budget.js`](src/run/budget.js) |
+| Retrieved text → worker | Ticket and page text is fenced as untrusted data, including stripping embedded fence tags. Worker output handling ignores model-supplied effects and filters references to retrieved sources. This limits write authority; it does not prove that all injected text or misleading answers are harmless. | [`src/worker/guard.js`](src/worker/guard.js), [`src/worker/llm.js`](src/worker/llm.js), `FS-INJECT-ISSUE` |
+| Review / recovery | Blast-radius preview exposes planned writes. Flight Recorder events and effect results support inspection and replay. Undo closes and labels created children, conditionally restores status, and uses saved scalar before-values for `restoreFields` only when current values still match what the run wrote. | [`blast radius & undo`](docs/blast-radius.md), [`src/effects/jira.js`](src/effects/jira.js), [`flight recorder`](docs/flight-recorder.md) |
 
-On Node v22.23.4, in this workspace:
+These are application-level controls within the Forge app's declared scopes, **not** a separate
+per-user Jira permission system or an independent identity check. See the [threat model](docs/threat-model.md)
+for actors, trust boundaries, and the limited SAIF mapping; see the limitations below before deploying.
 
-| Command | Result |
+## 🧪 Supporting evidence
+
+Rechecked on **2026-11-16 (CST, America/Chicago)** from main commit
+[`882cfeb`](https://github.com/LeoLin990405/ticket-conductor-safety/commit/882cfeb), using
+**Node v22.23.3 / npm 10.9.9**. The repository pins **22.23.4**; this local patch-version mismatch
+produced an engine warning during install and is not a claim of a pinned-runtime rerun.
+No live Jira site, paid LLM, or production credentials were used.
+
+| Command | Observed result |
 |---|---|
-| `npm test` | 366 pass, 1 skipped, 0 fail |
-| `npm run safety-eval` | 37 pass, 0 fail |
-| `npm run demo:offline` | baseline 6 irreversible mock-Jira writes, guarded 0 (6 of 6 blocked) |
-| `npm audit` | 0 vulnerabilities |
+| `npm ci` | Installed the lockfile; engine and upstream peer-dependency warnings |
+| `npm test` | **366 pass, 1 skipped, 0 fail**; in-memory / injected fakes |
+| `npm run safety-eval` | **37 pass, 0 fail**, including the 18-row failure matrix |
+| `npm run demo:offline` | Scripted baseline: **6 irreversible mock-Jira writes**; guarded: **0**, **6/6 blocked** without a human grant |
+| `npm audit` | **0 vulnerabilities reported** for this lockfile at check time; not a security proof |
+| `npm run lint` | **Not validated:** exited 1 because the local Secret Service / keytar service was unavailable |
 
-The 18-row failure matrix is inside that eval. `docs/failure-matrix.md` maps each class to a scenario id. `docs/evidence/safety-eval.json` is the machine-readable record. The baseline is a scripted agent with a raw mock Jira client. It is not a live model. `docs/threat-model.md` lists assets, actors, the model/panel/server boundary, and a short SAIF map.
+Use the default test environment: the harness injects fake model clients. Setting `CONDUCTOR_LLM=off`
+also disables those fakes and causes model-path assertions to fail; it is not required for offline tests.
+The [verification record](docs/evidence/readme-verification-2026-11-16.md) includes this failed diagnostic
+attempt, the successful rerun, and the skipped-test explanation.
 
-The mock is this repo's REST model. A timeout fails the effect row and leaves the HTTP call running. The panel account id is the Forge resolver context, with no second factor. Full limits are in [`docs/drawerrr-submission.md`](docs/drawerrr-submission.md).
-
-| Mechanism | Where to read it |
+| Evidence | What it demonstrates (and does not) |
 |---|---|
-| Blast-radius preview and compensating undo | [`docs/blast-radius.md`](docs/blast-radius.md), `src/blast/preview.js` |
-| HMAC grant, shared used-token table | `src/safety/grants.js`, `src/resolvers/index.js` |
-| Failure scenarios | `src/safety/failures.js`, [`docs/failure-matrix.md`](docs/failure-matrix.md) |
-| Scripted naive agent | `src/safety/naiveAgent.js` |
-| Budget stop | `src/run/budget.js` |
-| Threat model | [`docs/threat-model.md`](docs/threat-model.md) |
+| [Offline demo transcript](docs/media/demo-offline.txt) · [terminal rendering](docs/media/demo-offline.svg) · [source](src/safety/naiveAgent.js) | Six fixed intents: create, transition, field edit, injected instruction, duplicate create, malformed fields. The baseline has raw mock access; the guarded path uses actions and validation. This is a deterministic comparison, not a live-model benchmark or measured attack-success rate. |
+| [Safety report](docs/evidence/safety-eval.md) · [JSON](docs/evidence/safety-eval.json) · [terminal rendering](docs/media/safety-eval.svg) | Observed grant, dispatch, budget, undo, malformed-input, injection, timeout, and partial-failure checks. SVGs are generated text renderings, not screenshots of a live Jira session. |
+| [Failure matrix](docs/failure-matrix.md) · [scenario implementations](src/safety/failures.js) | Expected and observed outcomes for 18 named failure cases, including unauthorized context, expired/replayed approval, shared-store failure, and in-flight duplicate delivery. |
+| [Simulation harness](tests/simulation/) · [written scenarios](tests/scenarios/) | Real handlers with fake KVS, queues, Jira, Confluence, and model responses; written live scenarios are not proof that live runs occurred. |
+| [Threat model](docs/threat-model.md) · [design](docs/DESIGN.md) · [submission notes](docs/drawerrr-submission.md) | Design rationale and limits. Older runtime/results in submission or milestone notes are historical; the dated verification record above is this README's rerun. |
 
-> This is a public snapshot of a Codegeist 2026 project. The numbers above are from the in-memory store and the in-memory Jira client. Nothing here has been run against a live Jira site or a live model.
+Reproduce with the offline quick start below. A recorded live demo video is still a roadmap item;
+these transcripts and generated renderings are the demo evidence currently available.
 
 ## 🚀 Quick start
 
@@ -206,7 +245,7 @@ endpoint and the JSON-RPC calls, or runs the same four handlers against the in-m
 | Stage | Behaviour |
 |---|---|
 | Plan | `plan-split` rejects more than eight steps, an unknown `workerType`, an out-of-range `dependsOn`, and any cycle; a rejected plan stores nothing |
-| Dispatch | `dispatch-run` moves the run from `planning` to `running`, enqueues one `createIssue` per step, and pushes the ready steps to `step-queue` |
+| Dispatch | A valid human grant lets `dispatch-run` move `planning` to `running`; it enqueues child-issue effects except for steps held behind an open approval gate, and pushes ready steps to `step-queue` |
 | Steps | `step-worker` is idempotent per `(stepId, attempt)`; a stale attempt exits without side effects |
 | Dependencies | A step stays `waiting` until every `dependsOn` index is `done`; the watchdog does not scan `waiting` |
 | Effects | `effect-applier` claims a row, applies it, and stores the result; `applied` and `failed` rows never reach Jira again |
@@ -250,15 +289,32 @@ npm run lint                # forge lint; needs FORGE_EMAIL and FORGE_API_TOKEN
 
 - **Simulation harness.** [`tests/simulation/`](tests/simulation) fakes KVS (with read and write byte counters), both queues, Jira REST, Confluence CQL, `@forge/llm`, and the watchdog clock, then drives the real handlers.
 - **Byte budgets.** A scenario fails on zero KVS usage or on a cap breach; caps are the measured total plus about 15% in [`tests/simulation/budget.mjs`](tests/simulation/budget.mjs).
-- **CI.** [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs on push and pull request with Node 22.23.4: unit and module tests, then the simulation scenarios, then `forge lint`.
+- **CI.** [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs on push and pull request with Node 22.23.4: unit and module tests, simulation scenarios, safety eval, offline demo, then conditional `forge lint`.
 - **Lint needs a token.** The CI lint step exits 0 with a message when `FORGE_API_TOKEN` is not configured, so a green run does not always mean the manifest was linted.
-- **Recorded result.** [`docs/milestones.md`](docs/milestones.md) records `npm test` at **295 pass, 1 skipped, 0 fail** on 2026-11-04. That is the repository's own log, not a CI badge.
+- **Recorded result.** Current offline results and the skipped case are in the [dated verification record](docs/evidence/readme-verification-2026-11-16.md); [`docs/milestones.md`](docs/milestones.md) retains historical results.
 - **Model off by default.** With `CONDUCTOR_LLM=off` the workers write deterministic comments and store `generator: "fallback"`; `npm test` mocks `chat` and `list` and never calls the SDK.
 
 ## 🧭 Scope, limits & roadmap
 
 This is a hackathon project, not a product. The boundaries below are the ones the design and the
 tests actually enforce.
+
+- **Not production-validated.** Offline REST and storage fakes cannot establish live Jira workflow,
+  Forge authorization, cross-instance concurrency, or real-model behavior. Live adversarial and
+  end-to-end runs remain pending; local Forge lint was not completed in this review.
+- **Approval is not full identity or permission verification.** The resolver account id is the human
+  boundary; there is no second factor or proof that the goal author is the approver. Jira writes use
+  app authority (`asApp`), not a per-user permission check. Shared grants need a consistent server-side
+  `CONDUCTOR_CONFIRM_SECRET` across instances; the unset fallback is a process-local random key.
+- **Stopping is not cancellation.** A timeout fails the effect row but does not cancel an in-flight
+  HTTP request; Jira may still accept it. Budget stops drain pending forward effects, not already
+  applied work. Partial outcomes need reconciliation rather than blind retries.
+- **Undo is compensation, not a transaction.** Created issues, memory rows, and recorder events remain.
+  Scalar and status restoration can be skipped after another edit; a partial close can leave the
+  issue transitioned without the rollback label.
+- **Recorder and injection limits.** Recorder writes are best-effort and can leave gaps; the effect row is the
+  write-outcome source of truth. The event log is not a cryptographically tamper-proof audit trail. Fences and output filtering reduce model write authority, but do not
+  guarantee answer accuracy, injection immunity, or general data-exfiltration protection.
 
 | Area | Boundary |
 |---|---|
@@ -277,7 +333,8 @@ Roadmap, taken from [`docs/milestones.md`](docs/milestones.md) and [`docs/novelt
 - [ ] Run the five adversarial tries in [`tests/scenarios/06-adversarial-tries.md`](tests/scenarios/06-adversarial-tries.md) against a live Router
 - [ ] Enable `rovo:mcp` for one external client and confirm `tools/list`
 - [ ] Finish the live end-to-end pass on the demo site (M4)
-- [ ] Add the `approval` DAG node and risk-triggered gates (novelty #5)
+- [x] Support approval DAG nodes, score-threshold gate insertion when the plan has room, and deferred gated child creation
+- [ ] Validate gate thresholds and approval behavior on a live development site
 - [x] Record prior scalar values on `setFields` and restore them with `restoreFields` (a transition already stores `before.statusName`)
 - [ ] Record the demo video and finish the Devpost copy (M5, M6)
 
